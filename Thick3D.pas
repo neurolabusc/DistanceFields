@@ -24,7 +24,7 @@ var
 	img: TUInt8s;
 	isInputNIfTI: boolean;
 	txtNam, ext: string;
-	startTime : TDateTime;
+	//startTime : TDateTime;
 begin
 	result := false;
 	if not loadVolumes(fnm, hdr, img, isInputNIfTI) then exit;
@@ -44,14 +44,14 @@ begin
 	if isTxt then
 		txtNam := outName+'.1D';
 	hdr.intent_code := kNIFTI_INTENT_NONE; //just in case input is labelled map
-	startTime := Now;
+	//startTime := Now;
 	if (threshold = 0) then
 		result := distanceFieldAtlas(hdr, img, txtNam, maxthreads)
 	else
 		result := distanceFieldVolume(hdr, img, txtNam, threshold);
 	if not result then
 		exit;
-	writeln(format('Filter required %.3f seconds.', [MilliSecondsBetween(Now,startTime)/1000.0]));
+	//writeln(format('Filter required %.3f seconds.', [MilliSecondsBetween(Now,startTime)/1000.0]));
     ext := upcase(ExtractFileExt(fnm));
 	if (ext = '.GZ') then
 		fnm := changefileext(fnm,''); //e.g. file.raw.gz -> file.nii not file.raw.nii
@@ -67,7 +67,7 @@ begin
     {$IFDEF WINDOWS}
     exeName := ChangeFileExt(exeName, ''); //i2nii.exe -> i2nii
     {$ENDIF}
-    writeln('Chris Rorden''s '+exeName+' v1.0.20191115');
+    writeln('Chris Rorden''s '+exeName+' v1.0.20191118');
     writeln(' see https://prideout.net/blog/distance_fields/');
 	writeln(format('usage: %s [options] <in_file(s)>', [exeName]));
 	writeln('Reads volume and computes distance fields');

@@ -20,7 +20,7 @@ You can get Thick3D using two methods:
 ## Usage
 
 ```
-Chris Rorden's Thick3D v1.0.20191115
+Chris Rorden's Thick3D v1.0.20191118
  see https://prideout.net/blog/distance_fields/
 usage: Thick3D [options] <in_file(s)>
 Reads volume and computes distance fields

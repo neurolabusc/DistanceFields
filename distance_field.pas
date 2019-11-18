@@ -1,5 +1,6 @@
 unit distance_field;
-{$DEFINE MYTHREADS}
+{$DEFINE MYTHREADS} //multi-threaded
+{$DEFINE USEBOUNDS} //constrain to boundary
 {$mode Delphi} 
 {$IFDEF MYTHREADS}{$ModeSwitch nestedprocvars}{$ENDIF}
 {$H+}
@@ -43,7 +44,7 @@ BEGIN
       RESULT := false;
 END;
 
-procedure edt(var f: FloatRAp; var d,z: TFloat32s; var v: TInt32s; n: integer; mm: single);
+procedure edt(var f: FloatRAp; var d,z: TFloat32s; var v: TInt32s; n: integer);
 var
 	p, k, q: integer;
 	s, dx: TScalar;
@@ -101,32 +102,105 @@ begin
     	f[q] := d[q];
 end;
 
-procedure distanceFieldLR(var hdr: TNIFTIhdr; var img: TFloat32s; pixDimX: single = 1.0);
+Type
+  TCluster = record
+		CenterXYZ: TVec3; //Center of cluster as defined by furthest from edge
+        mxThick: single; //Peak thickness of cluster
+        SzMM3: single; //cluster volume in mm^3
+  end;
+  TClusters = array of TCluster;
+  TClusterBound = record
+  	lo, hi: TVec3i; 
+  end;
+
+function findBounds(var hdr: TNIFTIhdr; var img: TFloat32s; out bounds: TClusterBound): boolean;
+//returns bounding box with lowest and highest location of cluster in volume
+// useful for optimizations: thickness only computed inside a voxel.
+//returns false if no voxels in volume belong to cluster, e.g. sparse atlas with region 16 and 18 but no region 17
+
+var
+	x,y,z, i: integer;
+begin
+	result := false;
+	bounds.lo.x := maxint;
+	bounds.lo.y := maxint;
+	bounds.lo.z := maxint;
+	bounds.hi.x := -maxint;
+	bounds.hi.y := -maxint;
+	bounds.hi.z := -maxint;
+	i := -1;
+	for z := 0 to hdr.dim[3]-1 do begin
+		for y := 0 to (hdr.dim[2] -1) do begin
+			for x := 0 to (hdr.dim[1]-1) do begin
+				i += 1;
+				if img[i] = 0 then continue; //only test voxels inside object
+				if (x < bounds.lo.x) then bounds.lo.x := x;
+				if (y < bounds.lo.y) then bounds.lo.y := y;
+				if (z < bounds.lo.z) then bounds.lo.z := z;
+				if (x > bounds.hi.x) then bounds.hi.x := x;
+				if (y > bounds.hi.y) then bounds.hi.y := y;
+				if (z > bounds.hi.z) then bounds.hi.z := z;
+			end; //x
+		end; //y
+	end; //z
+	if (bounds.lo.x) > (bounds.hi.x) then exit; //no voxels in cluster
+	//next, expand bounding box by one voxel so each voxel has an outside surface
+	bounds.lo.x := bounds.lo.x - 1;
+	bounds.lo.y := bounds.lo.y - 1;
+	bounds.lo.z := bounds.lo.z - 1;
+	bounds.hi.x := bounds.hi.x + 1;
+	bounds.hi.y := bounds.hi.y + 1;
+	bounds.hi.z := bounds.hi.z + 1;
+	//do not expand outside the volume. 
+	// to do: zero voxels on face surface? 
+	bounds.lo.x := max(bounds.lo.x, 0);
+	bounds.lo.y := max(bounds.lo.y, 0);
+	bounds.lo.z := max(bounds.lo.z, 0);
+	bounds.hi.x := min(bounds.hi.x, hdr.dim[1]-1);
+	bounds.hi.y := min(bounds.hi.y, hdr.dim[2]-1);
+	bounds.hi.z := min(bounds.hi.z, hdr.dim[3]-1);
+	//printf(format('Cluster bounds x*y*z = %d..%d*%d..%d*%d..%d',[bounds.lo.x,bounds.hi.x,bounds.lo.y,bounds.hi.y,bounds.lo.z,bounds.hi.z])); 
+	result := true;
+end;
+
+procedure distanceFieldLR(var hdr: TNIFTIhdr; var img: TFloat32s; bounds: TClusterBound);
 //filter data in the X dimension (Left/Right)
 var
-	r, rows, cols: integer;
+	{$IFDEF USEBOUNDS}
+	si: integer;
+	{$ENDIF}
+	s, r, cols: integer;
 	f: FloatRAp;
 	d,z : TFloat32s;
 	v: TInt32s;
 begin
 	cols := hdr.dim[1];
-	rows := hdr.dim[2];
 	setlength(z, cols+1);
 	setlength(d, cols);
 	setlength(v, cols);
-	if hdr.dim[3] > 1 then rows := rows * hdr.dim[3];
-	if hdr.dim[4] > 1 then rows := rows * hdr.dim[4];	
-	for r := 0 to (rows-1) do begin		
+	{$IFDEF USEBOUNDS}
+	for s := bounds.lo.z to bounds.hi.z do begin
+		si := (s * hdr.dim[2]); //rows per slice
+		for r := bounds.lo.y to bounds.hi.y do begin
+			f := @img[(r+si)*cols];
+			edt(f, d, z, v, cols);	
+		end; //rows, y, dim2
+	end; //slices, z, dim3
+	{$ELSE}
+	s := hdr.dim[2];
+	if hdr.dim[3] > 1 then s *= hdr.dim[3];
+	for r := 0 to (s-1) do begin
 		f := @img[r*cols];
-		edt(f, d, z,v, cols, pixDimX);	
+		edt(f, d, z, v, cols);	
 	end;
-	//printf(format('LR%g',[pixDimX]));
+	{$ENDIF}
 end;
 
-procedure distanceFieldAP(var hdr: TNIFTIhdr; var img: TFloat32s; pixDimY: single = 1.0);
+procedure distanceFieldAP(var hdr: TNIFTIhdr; var img: TFloat32s; bounds: TClusterBound);
 //filter data in the Y dimension (Anterior/Posterior)
 var
-	x,y, k, s, r, rows, cols, slices: integer;
+	{$IFNDEF USEBOUNDS}slices: integer;{$ENDIF}
+	x,y, k, s, r, rows, cols: integer;
 	f: FloatRAp;
 	d,z, img2D : TFloat32s;
 	v: TInt32s;
@@ -137,10 +211,13 @@ begin
 	setlength(d, cols);
 	setlength(v, cols);
 	setlength(img2D, rows*cols);
+	{$IFDEF USEBOUNDS}
+	for s := bounds.lo.z to bounds.hi.z do begin
+	{$ELSE}
 	slices := 1;
 	if hdr.dim[3] > 1 then slices := slices * hdr.dim[3];
-	if hdr.dim[4] > 1 then slices := slices * hdr.dim[4];
-	for s := 0 to (slices-1) do begin	
+	for s := 0 to (slices-1) do begin
+	{$ENDIF}	
 		//transpose
 		k := s * (rows * cols); //slice offset
 		for x := 0 to (cols-1) do begin
@@ -151,7 +228,7 @@ begin
 		end;
 		for r := 0 to (rows-1) do begin		
 			f := @img2D[r*cols];
-			edt(f, d, z,v, cols, pixDimY);	
+			edt(f, d, z, v, cols);	
 		end;
 		//transpose
 		k := s * (rows * cols); //slice offset
@@ -162,35 +239,34 @@ begin
 			end;
 		end;
 	end;
-	//printf(format('AP%g',[pixDimY]));
 end;
 
-procedure distanceFieldHF(var hdr: TNIFTIhdr; var img: TFloat32s; pixDimZ: single = 1.0);
+procedure distanceFieldHF(var hdr: TNIFTIhdr; var img: TFloat32s; bounds: TClusterBound);
 //filter data in the Z dimension (Head/Foot)
 //by far the most computationally expensive pass
 // unlike LR and AP, we must process 3rd (Z) and 4th (volume number) dimension separately
 var
-	vol, sx, sxy, sxyz, x,y,k, s, r, rows, cols, slices, vols: integer;
+	sx, sxy, x,y,k, s, r, rows, cols: integer;
 	f: FloatRAp;
 	d,z, img2D : TFloat32s;
 	v: TInt32s;
 begin
-	if (hdr.dim[3] < 2) then exit;
+	if (hdr.dim[3] < 2) then exit; //2D images have height and width but not depth
 	//we could transpose [3,2,1] or [3,1,2] - latter improves cache?
-	vols := min(1,  hdr.dim[4]);
 	cols := hdr.dim[3];
 	rows := hdr.dim[1];
 	sxy := hdr.dim[1] * hdr.dim[2];
-	sxyz := sxy * hdr.dim[3];
-	slices := hdr.dim[2];;
 	setlength(z, cols+1);
 	setlength(d, cols);
 	setlength(v, cols);
 	setlength(img2D, rows*cols);
-	for vol := 0 to (vols-1) do begin
-		for s := 0 to (slices-1) do begin	
+		{$IFDEF USEBOUNDS}
+		for s := bounds.lo.y to bounds.hi.y do begin
+		{$ELSE}
+		for s := 0 to (hdr.dim[2]-1) do begin
+		{$ENDIF}	
 			//transpose
-			sx := (vol * sxyz) +(s * rows);
+			sx := (s * rows);
 			k := 0; //slice offset along Y axis
 			for x := 0 to (rows-1) do begin
 				for y := 0 to (cols-1) do begin
@@ -200,7 +276,7 @@ begin
 			end;
 			for r := 0 to (rows-1) do begin		
 				f := @img2D[r*cols];
-				edt(f, d, z,v, cols, pixDimZ);	
+				edt(f, d, z, v, cols);	
 			end;
 			//transpose
 			k := 0; //slice offset along Y axis
@@ -211,8 +287,6 @@ begin
 				end;
 			end;
 		end; //slice
-	end; //vols
-	//printf(format('HF%g',[pixDimZ]));
 end; //distanceFieldHF()
 
 procedure fixHdr(var hdr: TNIFTIhdr);
@@ -225,14 +299,6 @@ begin
 	if hdr.dim[3] < 1 then hdr.dim[3] := 1;
 	if hdr.dim[4] < 1 then hdr.dim[4] := 1;
 end;
-
-Type
-  TCluster = record
-		CenterXYZ: TVec3; //Center of cluster as defined by furthest from edge
-        mxThick: single; //Peak thickness of cluster
-        SzMM3: single; //cluster volume in mm^3
-  end;
-  TClusters = array of TCluster;
   
 procedure saveClusterAsTxt(fnm: string; var c: TClusters);
 function f2s(f: single): string;
@@ -279,7 +345,7 @@ begin
 	//first pass: find peak and center of gravity
 	sum := Vec3 (0,0,0);
 	mxThick := img[0];	
-	i := 0;
+	i := vol * hdr.dim[1] * hdr.dim[2] * hdr.dim[3];
 	n := 0;
 	for z := 0 to (max(1, hdr.dim[3])-1) do begin
 		for y := 0 to (hdr.dim[2] -1) do begin
@@ -287,6 +353,9 @@ begin
 				s := img[i];
 				i += 1;
 				if (s = 0) then continue;
+				//note: we could weight center of mass with thickness
+				//here, each voxel that survives the threshold is counted equally
+				//note that center of mass is just used as a tie-breaker
 				sum += Vec3(x,y,z);
 				n += 1;
 				if (s > mxThick) then mxThick := s;
@@ -299,7 +368,7 @@ begin
 		exit;
 	cog := sum / n;
 	//second pass: find voxel at thickest location, if a tie, choose voxel nearest center of gravity
-	i := 0;
+	i := vol * hdr.dim[1] * hdr.dim[2] * hdr.dim[3];
 	mnDx := infinity;
 	center := cog;
 	for z := 0 to (max(1, hdr.dim[3])-1) do begin
@@ -330,28 +399,48 @@ begin
 	mn := min(abs(hdr.pixdim[1]), min(abs(hdr.pixdim[2]), abs(hdr.pixdim[3])));
 	mx := max(abs(hdr.pixdim[1]), max(abs(hdr.pixdim[2]), abs(hdr.pixdim[3])));
 	voxMM := mn+(0.5*(mx-mn));
-	if (mn = 0) or (specialsingle(mn)) then exit(false);
-	if (mx/mn) > 1.02 then exit(false);
+	if (mn = 0) or (specialsingle(mn)) or ((mx/mn) > 1.02) then begin
+		printf('Image is anisotropic: reslice to isotropic grid.');
+		exit(false);
+	end;
 	exit(true);
+end;
+
+function distanceFieldVolume3D(var hdr: TNIFTIhdr; var img32: TFloat32s): boolean;
+var
+	bounds: TClusterBound;
+	i, vx: integer;
+	voxMM: single;
+begin
+	result := false;	
+	if not isIsotropic(hdr, voxMM) then
+		exit;
+	if not findBounds(hdr, img32, bounds) then begin
+		printf('Error: the threshold does not discriminate between air and object.');
+		exit;	
+	end;
+	vx := hdr.dim[1] * hdr.dim[2] * hdr.dim[3];
+	distanceFieldLR(hdr, img32, bounds);
+	distanceFieldAP(hdr, img32, bounds);
+	distanceFieldHF(hdr, img32, bounds);	
+	for i := 0 to (vx-1) do
+		img32[i] := sqrt(img32[i]) * voxMM;
+	result := true;	
 end;
 
 function distanceFieldVolume(var hdr: TNIFTIhdr; var img: TUInt8s;  txtnam: string = '';  threshold: single = 0.5): boolean;
 //process a 3D scalar volume
 var
-	i, vx, vxObj, vol: integer;
-	voxMM: single;
-	img32: TFloat32s;
+	i, j, o, vx, nvol: integer;
+	img32, img32v3D: TFloat32s;
 	c: TClusters;
 begin
 	result := false;
-	if not isIsotropic(hdr, voxMM) then
-		exit;
 	fixHdr(hdr);
 	changeDataType(hdr, img, kDT_FLOAT32);
 	img32 := TFloat32s(img);
-	vx := hdr.dim[1] * hdr.dim[2];
-	if hdr.dim[3] > 1 then vx *= hdr.dim[3];
-	if hdr.dim[4] > 1 then vx *= hdr.dim[4];
+	nvol := max(1, hdr.dim[4]);
+	vx := hdr.dim[1] * hdr.dim[2] * hdr.dim[3]*nvol;
 	if (threshold > 0) then begin	
 		for i := 0 to (vx-1) do
 			if img32[i] >= threshold then
@@ -365,24 +454,23 @@ begin
 			else
 				img32[i] := 0;	
 	end;
-	vxObj := 0; //count how many voxels are inside object
-	for i := 0 to (vx-1) do
-		if img32[i] <> 0 then
-			vxObj += 1;
-	if (vxObj = 0) or (vxObj = vx) then begin
-		printf(format('Error: the threshold %g does not discriminate between air and object.', [threshold]));
-		exit;	
-	end;	
-	distanceFieldLR(hdr,img32);
-	distanceFieldAP(hdr,img32);
-	distanceFieldHF(hdr,img32);	
-	for i := 0 to (vx-1) do
-		img32[i] := sqrt(img32[i]) * voxMM;
-	result := true;	
-	if  txtnam = '' then exit;
-	vol := max(1, hdr.dim[4]); 
-	setlength(c, vol);
-	for i := 0 to (vol-1) do
+	//printf(format('Error: the threshold %g does not discriminate between air and object.', [threshold]));
+	if nvol > 1 then begin //process each 3D volume one at a time, 
+		vx := hdr.dim[1] * hdr.dim[2] * hdr.dim[3];
+		for i := 0 to (nvol-1) do begin
+			o := i*vx; //offset for 3D volume in 4D array
+			img32v3D := copy(img32, o, vx);
+			result := distanceFieldVolume3D(hdr,img32v3D);
+			if not result then exit;
+			for j := 0 to (vx-1) do
+				img32[j+o] := img32v3D[j];	
+		end;	
+	end else	
+		result := distanceFieldVolume3D(hdr,img32);
+	if not result then exit;
+	if  (txtnam = '') then exit; 
+	setlength(c, nvol);
+	for i := 0 to (nvol-1) do
 		c[i] := clusterCenter(hdr, img32, i);
 	saveClusterAsTxt(txtnam, c);
 end;
@@ -408,7 +496,8 @@ procedure SubProc(Index: PtrInt);
 {$ENDIF}
   var
   	img32: TFloat32s;
-  	j, vxObj: integer;	
+  	j: integer;
+  	bounds: TClusterBound;	
   begin
 		setlength(img32, vx);
 		for j := 0 to (vx-1) do
@@ -416,15 +505,11 @@ procedure SubProc(Index: PtrInt);
 				img32[j] := infinity
 			else
 				img32[j] := 0;
-		vxObj := 0; //count how many voxels are inside object
-		for j := 0 to (vx-1) do
-			if img32[j] <> 0 then
-					vxObj += 1;
-		if (vxObj = 0) or (vxObj = vx) then 
+		if not findBounds(hdr, img32, bounds) then 
 			exit; //sparse atlas, e.g. atlas has region 1 and 3 but not 2
-		distanceFieldLR(hdr,img32, hdr.pixdim[1]);
-		distanceFieldAP(hdr,img32, hdr.pixdim[2]);
-		distanceFieldHF(hdr,img32, hdr.pixdim[3]);
+		distanceFieldLR(hdr, img32, bounds);
+		distanceFieldAP(hdr, img32, bounds);
+		distanceFieldHF(hdr, img32, bounds);
 		//only write to voxels INSIDE region, each thread writes to unique set of voxels	
 		for j := 0 to (vx -1) do
 			if (img32[j] > 0) then //this voxel is inside region "Index"
@@ -441,11 +526,15 @@ begin
 		printf('distance fields for atlases (threshold=0) expects integer datatypes.');
 		exit;
 	end;
+	if hdr.dim[4] > 1 then begin
+		printf('distance fields for atlases are expected to be 3D not 4D images.');
+		exit;
+	end;
 	fixHdr(hdr);
 	changeDataType(hdr, img, kDT_INT32);  //convert header to float
 	vx := hdr.dim[1] * hdr.dim[2];
 	if hdr.dim[3] > 1 then vx *= hdr.dim[3];
-	if hdr.dim[4] > 1 then vx *= hdr.dim[4];
+	
 	if vx < 1 then exit;
 	imgIdx := copy(TInt32s(img), 0, vx);
 	mn := imgIdx[0];
@@ -467,12 +556,9 @@ begin
 	setlength(c, mx);
 	for i := 0 to (mx-1) do
 		c[i].SzMM3 := 0; //skip for sparse atlases
-	
 	{$IFDEF MYTHREADS}
 	printf(format('Threaded filter of atlas with %d..%d regions',[mn,mx]));
 	ProcThreadPool.DoParallelNested(subproc,mn,mx, nil, MaxThreads);
-	//ProcThreadPool.DoParallelNested(subproc,mn,mx,nil, 4);
-	//DoParallelNested(TMTNestedProcedure, StartIndex, EndIndex, Pointer = nil; MaxThreads: PtrInt = 0);
 	{$ELSE}	
 	printf(format('Filter of atlas with %d..%d regions',[mn,mx]));
 	for roi := mn to mx do	
