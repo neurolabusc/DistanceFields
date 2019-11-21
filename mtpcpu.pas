@@ -21,7 +21,7 @@ interface
 {$IF defined(windows)}
 uses Windows;
 {$ELSEIF defined(freebsd) or defined(darwin)}
-uses ctypes, sysctl;
+uses ctypes, sysctl {$ifdef darwin}, unixtype{$endif};
 {$ELSEIF defined(linux)}
 {$linklib c}
 uses ctypes;
@@ -69,9 +69,9 @@ end;
   end;
 {$ELSEIF defined(freebsd) or defined(darwin)}
 var
+  t: size_t;
   mib: array[0..1] of cint;
   len: cint;
-  t: cint;
 begin
   mib[0] := CTL_HW;
   mib[1] := HW_NCPU;

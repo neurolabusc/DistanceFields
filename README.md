@@ -60,7 +60,7 @@ By default, this software generates a NIfTI format thickness map. The `-r` optio
 
 ## Performance
 
-This is a very fast algorithm. Further, atlas images (where thickness is computed for each region independently) can leverage parallel processing. The sample [AICHA](http://www.gin.cnrs.fr/en/tools/aicha/) atlas has 192 regions. It requires 8 seconds to process in single threaded mode and 1.1 seconds for threaded conversion on a 6-core (12-thread) laptop.
+This is a very fast algorithm. However, atlas images are necessarily complex, as thickness is computed for each region independently. This tool uses two tricks that accelerate these cases. First, thickness is only computed for a box constrained by the size of the region being computed, rather than for the entire volume. This is useful for atlases with many regions, where each region typically is only a small portion of the overall 3D volume. In general, this trick makes the algorithm about 5 times faster. Further, this algorithm can leverage parallel processing. The included sample [AICHA](http://www.gin.cnrs.fr/en/tools/aicha/) atlas has 384 regions. It requires 1.65 seconds to process in single threaded mode and 0.45 seconds for threaded conversion on a 4-core (8-thread) laptop.
 
 ## Limitations
 

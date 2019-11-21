@@ -167,7 +167,7 @@ procedure distanceFieldLR(var hdr: TNIFTIhdr; var img: TFloat32s; bounds: TClust
 //filter data in the X dimension (Left/Right)
 var
 	{$IFDEF USEBOUNDS}
-	si: integer;
+	si, colStart, colLen: integer;
 	{$ENDIF}
 	s, r, cols: integer;
 	f: FloatRAp;
@@ -179,11 +179,15 @@ begin
 	setlength(d, cols);
 	setlength(v, cols);
 	{$IFDEF USEBOUNDS}
+	colStart := bounds.lo.x;
+	colLen := bounds.hi.x - bounds.lo.x + 1;
 	for s := bounds.lo.z to bounds.hi.z do begin
 		si := (s * hdr.dim[2]); //rows per slice
 		for r := bounds.lo.y to bounds.hi.y do begin
-			f := @img[(r+si)*cols];
-			edt(f, d, z, v, cols);	
+			f := @img[((r+si)*cols)+colStart];
+			edt(f, d, z, v, colLen);
+			//f := @img[(r+si)*cols];
+			//edt(f, d, z, v, cols);	
 		end; //rows, y, dim2
 	end; //slices, z, dim3
 	{$ELSE}
@@ -199,7 +203,11 @@ end;
 procedure distanceFieldAP(var hdr: TNIFTIhdr; var img: TFloat32s; bounds: TClusterBound);
 //filter data in the Y dimension (Anterior/Posterior)
 var
-	{$IFNDEF USEBOUNDS}slices: integer;{$ENDIF}
+	{$IFDEF USEBOUNDS}
+	colStart, colLen: integer;
+	{$ELSE}
+	slices: integer;
+	{$ENDIF}
 	x,y, k, s, r, rows, cols: integer;
 	f: FloatRAp;
 	d,z, img2D : TFloat32s;
@@ -212,6 +220,8 @@ begin
 	setlength(v, cols);
 	setlength(img2D, rows*cols);
 	{$IFDEF USEBOUNDS}
+	colStart := bounds.lo.y;
+	colLen := bounds.hi.y - bounds.lo.y + 1;
 	for s := bounds.lo.z to bounds.hi.z do begin
 	{$ELSE}
 	slices := 1;
@@ -226,9 +236,14 @@ begin
 				k := k + 1;
 			end;
 		end;
-		for r := 0 to (rows-1) do begin		
+		for r := 0 to (rows-1) do begin
+			{$IFDEF USEBOUNDS}		
+			f := @img2D[(r*cols)+colStart];
+			edt(f, d, z, v, colLen);
+			{$ELSE}	
 			f := @img2D[r*cols];
 			edt(f, d, z, v, cols);	
+			{$ENDIF}
 		end;
 		//transpose
 		k := s * (rows * cols); //slice offset
@@ -246,6 +261,9 @@ procedure distanceFieldHF(var hdr: TNIFTIhdr; var img: TFloat32s; bounds: TClust
 //by far the most computationally expensive pass
 // unlike LR and AP, we must process 3rd (Z) and 4th (volume number) dimension separately
 var
+	{$IFDEF USEBOUNDS}
+	colStart, colLen: integer;	
+	{$ENDIF}
 	sx, sxy, x,y,k, s, r, rows, cols: integer;
 	f: FloatRAp;
 	d,z, img2D : TFloat32s;
@@ -260,33 +278,40 @@ begin
 	setlength(d, cols);
 	setlength(v, cols);
 	setlength(img2D, rows*cols);
-		{$IFDEF USEBOUNDS}
-		for s := bounds.lo.y to bounds.hi.y do begin
-		{$ELSE}
-		for s := 0 to (hdr.dim[2]-1) do begin
-		{$ENDIF}	
-			//transpose
-			sx := (s * rows);
-			k := 0; //slice offset along Y axis
-			for x := 0 to (rows-1) do begin
-				for y := 0 to (cols-1) do begin
-					img2D[k] := img[x + sx + (y*sxy)];
-					k := k + 1;
-				end;
+	{$IFDEF USEBOUNDS}
+	colStart := bounds.lo.z;
+	colLen := bounds.hi.z - bounds.lo.z + 1;
+	for s := bounds.lo.y to bounds.hi.y do begin
+	{$ELSE}
+	for s := 0 to (hdr.dim[2]-1) do begin
+	{$ENDIF}	
+		//transpose
+		sx := (s * rows);
+		k := 0; //slice offset along Y axis
+		for x := 0 to (rows-1) do begin
+			for y := 0 to (cols-1) do begin
+				img2D[k] := img[x + sx + (y*sxy)];
+				k := k + 1;
 			end;
-			for r := 0 to (rows-1) do begin		
-				f := @img2D[r*cols];
-				edt(f, d, z, v, cols);	
+		end;
+		for r := 0 to (rows-1) do begin
+			{$IFDEF USEBOUNDS}
+			f := @img2D[(r*cols)+colStart];
+			edt(f, d, z, v, colLen);			
+			{$ELSE}		
+			f := @img2D[r*cols];
+			edt(f, d, z, v, cols);
+			{$ENDIF}	
+		end;
+		//transpose
+		k := 0; //slice offset along Y axis
+		for x := 0 to (rows-1) do begin
+			for y := 0 to (cols-1) do begin
+				img[x + sx + (y*sxy)] := img2D[k];
+				k := k + 1;
 			end;
-			//transpose
-			k := 0; //slice offset along Y axis
-			for x := 0 to (rows-1) do begin
-				for y := 0 to (cols-1) do begin
-					img[x + sx + (y*sxy)] := img2D[k];
-					k := k + 1;
-				end;
-			end;
-		end; //slice
+		end;
+	end; //slice
 end; //distanceFieldHF()
 
 procedure fixHdr(var hdr: TNIFTIhdr);

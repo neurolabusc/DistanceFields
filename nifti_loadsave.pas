@@ -453,7 +453,7 @@ begin
 	 nvol := lHdr.dim[4];
 	 if (nvol < 2) or (not is3D) then begin
 	 	result := saveNii(fnm, lHdr, rawData, isGz);
-	 	exit;
+	 	exit(false);
 	 end; 
 	 //only 4D->3D datasets follow...	
 	 pad := trunc(log10(nvol))+1;

@@ -1,8 +1,6 @@
 program Thick3D;
-//clone of AFNI program fdrval
+//Compute each voxels distance from edge of cluster
 //   fpc -CX -Xs -XX -O3 Thick3D
-//On MacOS O3 seems to disable multi-threading
-//  fpc -CX -Xs -XX Thick3D
 
 {$mode Delphi} //{$mode objfpc}
 {$H+}
@@ -153,7 +151,7 @@ begin
     if (ParamCount = 0) or (isShowHelp) then
         ShowHelp;
     if nOK > 0 then 
-        writeln(format('Conversion required %.3f seconds.', [MilliSecondsBetween(Now,startTime)/1000.0]));
+        writeln(format('Filter required %.3f seconds.', [MilliSecondsBetween(Now,startTime)/1000.0]));
     if (nOK = nAttempt) then
         ExitCode := kEXIT_SUCCESS
     else if (nOK = 0) then
