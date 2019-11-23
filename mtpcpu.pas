@@ -69,9 +69,9 @@ end;
   end;
 {$ELSEIF defined(freebsd) or defined(darwin)}
 var
-  t: size_t;
+  len, t: csize_t;
   mib: array[0..1] of cint;
-  len: cint;
+  //len: cint;
 begin
   mib[0] := CTL_HW;
   mib[1] := HW_NCPU;

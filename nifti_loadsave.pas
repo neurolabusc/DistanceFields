@@ -450,10 +450,11 @@ var
 	bytesPerVol: int64;
 	rawDataVol: TUInt8s;
 begin
+	 result := false;
 	 nvol := lHdr.dim[4];
 	 if (nvol < 2) or (not is3D) then begin
 	 	result := saveNii(fnm, lHdr, rawData, isGz);
-	 	exit(false);
+	 	exit;
 	 end; 
 	 //only 4D->3D datasets follow...	
 	 pad := trunc(log10(nvol))+1;
@@ -485,7 +486,7 @@ begin
         lExt2GZ := changefileext(lFilename,'');
         lExt2GZ := upcase(ExtractFileExt(lExt2GZ));
     end;
-    if (lExt2GZ <> '.NII') and (lExt <> '.NII') then exit;
+    if (lExt2GZ <> '.NII') and (lExt <> '.NII') and (lExt <> '.HDR') then exit;
     lHdr.HdrSz := 0;
     if (lExt = '.GZ') then begin
         zStream := TGZFileStream.Create (lFilename, gzopenread);
@@ -509,7 +510,11 @@ begin
     end;
     if (lHdr.scl_slope = 0.0) then
     	lHdr.scl_slope := 1.0;
-    result := lHdr.HdrSz = SizeOf (TNIFTIHdr) 
+    result := lHdr.HdrSz = SizeOf (TNIFTIHdr);
+    if (lExt = '.HDR') and (result) then begin
+    	lFilename := changefileext(lFilename, '.img');
+    	result := fileexists(lFileName);	
+    end;
 end;
 
 function loadVolumes(var FileName: string; out lHdr: TNIFTIhdr; out rawData: TUInt8s; out isInputNIfTI: boolean): boolean;
@@ -539,7 +544,6 @@ begin
         printf('Unable to interpret header "'+FileName+'"');
         exit;
      end;
-     //printf('DEBUGMODE>>>read but do not convert images');  exit;
      if not fileexists(FileName) then begin
         printf('Unable to find image data "'+FileName+'" described by header "'+ifnm+'"');
         exit;

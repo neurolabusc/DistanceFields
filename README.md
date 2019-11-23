@@ -4,25 +4,23 @@ Consider an image where some pixels/voxels show cortex and the rest indicate air
 
 While Snowy is ideal for most situations, this project is specifically designed for high performance with medical images, reading various popular formats and saving distance fields in the popular NIfTI format, which you can view with many tools including [MRIcroGL](https://www.nitrc.org/projects/mricrogl).
 
-![alt tag](https://github.com/neurolabusc/DistanceFields/blob/master/atlas.jpg)
-
 ## Installation
 
-You can get Thick3D using two methods:
+You can get Depth3D using two methods:
 
  - (Recommended) Download latest compiled release from [Github release web page](https://github.com/rordenlab/DistanceFields/releases).
  - (Recommended) You can also download from the command line for Linux, MacOS and Windows:
-   * `curl -fLO https://github.com/rordenlab/DistanceFields/releases/latest/download/Thick3D_lnx.zip`
-   * `curl -fLO https://github.com/rordenlab/DistanceFields/releases/latest/download/Thick3D_mac.zip`
-   * `curl -fLO https://github.com/rordenlab/DistanceFields/releases/latest/download/Thick3D_win.zip`
+   * `curl -fLO https://github.com/rordenlab/DistanceFields/releases/latest/download/Depth3D_lnx.zip`
+   * `curl -fLO https://github.com/rordenlab/DistanceFields/releases/latest/download/Depth3D_mac.zip`
+   * `curl -fLO https://github.com/rordenlab/DistanceFields/releases/latest/download/Depth3D_win.zip`
  - (Developers) Download the source code from [GitHub](https://github.com/rordenlab/DistanceFields).
 
 ## Usage
 
 ```
-Chris Rorden's Thick3D v1.0.20191118
+Chris Rorden's Depth3D v1.0.20191118
  see https://prideout.net/blog/distance_fields/
-usage: Thick3D [options] <in_file(s)>
+usage: Depth3D [options] <in_file(s)>
 Reads volume and computes distance fields
 OPTIONS
  -3 : save 4D data as 3D files (y/n, default n)
@@ -32,40 +30,93 @@ OPTIONS
  -t : threshold, less extreme values treated as outside (default 0.5)
        set to 0 for separate field for each region of an atlas
  -p : parallel threads (0=optimal, 1=one, 5=five, default 0)
+ -s : supersample for continuous images (1=x1, 2=x2, 5=x5, default 1)
  -z : gz compress images (y/n, default n)
  Examples :
-  Thick3D -t 0 ./test/AICHA.nii.gz
-  Thick3D -t 0.5 ./test/4Dgraywhite.nii.gz
-  Thick3D -t 0.5 ./test/anisotropic.nii.gz
-  Thick3D -o "~/out dir/OutputImg" -t 0.5 "./test/name with spaces"
+  Depth3D -t 0 ./test/AICHA.nii.gz
+  Depth3D -t 0 ./test/inia19-NeuroMaps.nii.gz
+  Depth3D -t 0.5 ./test/4Dgraywhite.nii.gz
+  Depth3D -t 0.5 ./test/isotropic.nii.gz
+  Depth3D -t 0.25 -s 3 ./test/avg152T1_gray.nii.gz
+  Depth3D -o "~/out dir/OutputImg" -t 0.5 "./test/name with spaces"
 ```
-
-## Results
-
-By default, this software generates a NIfTI format thickness map. The `-r` option allows you to generate text reports. You can generate these reports along with the NIfTIM image (`-r y`) or only generate the text reports (`-r o`). For standard input images, one line of text is generated per volume. However, for an atlas (`-t 0`) one line is generated for each region in the atlas.
- 
-```
-# Thick3D interactive cluster table
-#Coordinate order = RAS
-#VolMM3    Th x     Th y     Th z    Peak     Label
-#------- -------- -------- -------- -------- --------
-    1312   -14.00    66.00    12.00     2.24        1 
-   17480     8.00    48.00    44.00     2.83        2 
-    1184    20.00    18.00    60.00     1.73        3 
-    7096    18.00    62.00   -10.00     3.00        4 
-...
-```
-
-![alt tag](https://github.com/neurolabusc/DistanceFields/blob/master/graymatter.jpg)
 
 ## Performance
 
-This is a very fast algorithm. However, atlas images are necessarily complex, as thickness is computed for each region independently. This tool uses two tricks that accelerate these cases. First, thickness is only computed for a box constrained by the size of the region being computed, rather than for the entire volume. This is useful for atlases with many regions, where each region typically is only a small portion of the overall 3D volume. In general, this trick makes the algorithm about 5 times faster. Further, this algorithm can leverage parallel processing. The included sample [AICHA](http://www.gin.cnrs.fr/en/tools/aicha/) atlas has 384 regions. It requires 1.65 seconds to process in single threaded mode and 0.45 seconds for threaded conversion on a 4-core (8-thread) laptop.
+This is a very fast algorithm. However, atlas images are necessarily complex, as depth is computed for each region independently. This tool uses two tricks that accelerate these cases. First, depth is only computed for a box constrained by the size of the region being computed, rather than for the entire volume. This is useful for atlases with many regions, where each region typically is only a small portion of the overall 3D volume. In general, this trick makes the algorithm about 5 times faster. Further, this algorithm can leverage parallel processing. The included sample [AICHA](http://www.gin.cnrs.fr/en/tools/aicha/) atlas has 384 regions. It requires 1.65 seconds to process in single threaded mode and 0.45 seconds for threaded conversion on a 4-core (8-thread) laptop.
+
+## Examples
+
+### Object Center
+
+In this example, we compute the peak thickness location for a C-shaped region. The image below shows that a nicely representative location has been identified. In contrast, the center of mass is outside the object.
+
+```
+Depth3D -t 0.5 -r y ./test/region4.nii.gz 
+
+```
+
+Generates this table:
+
+```
+# Depth3D interactive cluster table
+#CoM=CenterOfMass, PT=PeakThickness
+#Coordinate order = RAS
+#VolMM3    PT x     PT y     PT z    Peak     Label     CoM x    CoM y    CoM z
+#------- -------- -------- -------- -------- -------- -------- -------- -------- 
+   29345    31.00   -57.00   -15.00     7.35        1    20.85   -12.59    -3.34 
+```
+
+![alt tag](https://github.com/neurolabusc/DistanceFields/blob/master/region4.png)
+
+### Sphere
+
+It seems unintuitive that 3D thickness can be estimated by a separable filter that examines each line of each dimension sequentially. The image below shows axial, coronal and sagittal slices illustrating the thickness measures for a simple sphere. Note how well the thickness is modelled at off-axis angles.
+
+```
+Depth3D -t 0.5 ./test/isotropic.nii.gz 
+```
+![alt tag](https://github.com/neurolabusc/DistanceFields/blob/master/sphere.png)
+
+### Atlas Centers
+
+The image below shows the [AICHA atlas](http://www.gin.cnrs.fr/en/tools/aicha/) in color, with the brightness modulated by the thickness of each of the 384 regions. 
+
+```
+Depth3D -t 0  -r y ./test/AICHA.nii.gz 
+```
+
+Generates the following report of centers:
+
+```
+# Depth3D interactive cluster table
+#CoM=CenterOfMass, PT=PeakThickness
+#Coordinate order = RAS
+#VolMM3    PT x     PT y     PT z    Peak     Label     CoM x    CoM y    CoM z
+#------- -------- -------- -------- -------- -------- -------- -------- -------- 
+    1112   -18.00    64.00    14.00     4.47        1   -15.99    64.94    13.08 
+     200    12.00    68.00    10.00     2.83        2    12.88    67.68    10.64 
+    8576   -14.00    50.00    38.00     4.90        3   -11.92    46.50    40.48
+.... 
+```
+
+![alt tag](https://github.com/neurolabusc/DistanceFields/blob/master/atlas.jpg)
+
+### Super Sampling
+
+This method assumes an image is binary: a voxel is either inside or outside the region. In reality, some voxels at the boundary of a region will be a mixture of the region and non-region. This is the partial volume problem: tissue is not constrained to respect the borders of our voxels. A nice example of this is tissue probability maps, where a voxel that is 75% gray matter and 25% other tissue (white matter, CSF) might have an intensity of 0.25. If we analyze this data at its original resolution, the results may be a bit blocky. One solution is to up-sample the data to a higher resolution, apply our threshold, compute thickness and downsample the resulting data. In theory, this method can capture some of boundary of the object a bit better. Thick3D provides the `-s` option that allows you to select a super-sampling factor. The image will be up-sampled and subsequently downsampled using a [antialiasing Mitchell filter](https://www.sciencedirect.com/science/article/pii/B9780080507552500129). Both the upsampling and the inherent smoothing of this filter can make the resulting values a bit less discrete. The images below were created with these two commands that compute thickness without super sampling (left) and with x4 supersampling (right).
+
+```
+Depth3D -t 0.25 ./test/avg152T1_gray.nii.gz
+Depth3D -t 0.25 -s 4 ./test/avg152T1_gray.nii.gz
+```
+
+![alt tag](https://github.com/neurolabusc/DistanceFields/blob/master/supersample.png)
 
 ## Limitations
 
  - This software is provided as is. It uses the BSD license.
- - This algorithm assumes that the spatial resolution is identical in each dimension. Anisotropic data must either be resliced to an isotropic grid or a different method must be used.
+ - Similar to erosion methods, this algorithm assumes that the spatial resolution is identical in each dimension. Anisotropic data must either be resliced to an isotropic grid or a different method must be used.
  
 ## Compiling
 
@@ -75,8 +126,8 @@ Most people will want to download a [pre-compiled executable](https://github.com
  - From the terminal, go inside the directory with the source files and run the following commands to build and validate your compilation:
 
 ```
-fpc Thick3D
-./Thick3D ./test/AICHA.nii.gz
+fpc Depth3D
+./Depth3D ./test/AICHA.nii.gz
 ```
 
 ## Supported Image Formats

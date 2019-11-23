@@ -6,14 +6,14 @@ unit distance_field;
 {$H+}
 interface
 uses  
-	{$IFDEF MYTHREADS}mtprocs,{$ENDIF}
+	{$IFDEF MYTHREADS}mtprocs,mtpcpu,{$ENDIF}
 	{$IFNDEF UNIX}system, {$ENDIF}
 	dateutils, Math, VectorMath, SimdUtils, StrUtils, 
 	SysUtils, Classes, nifti_types, nifti_loadsave, nifti_foreign;
   
 
 function distanceFieldAtlas(var hdr: TNIFTIhdr; var img: TUInt8s; txtnam: string = ''; MaxThreads: PtrInt = 0): boolean;
-function distanceFieldVolume(var hdr: TNIFTIhdr; var img: TUInt8s; txtnam: string = ''; threshold: single = 0.5): boolean;
+function distanceFieldVolume(var hdr: TNIFTIhdr; var img: TUInt8s; txtnam: string = ''; threshold: single = 0.5; MaxThreads: PtrInt = 0): boolean;
 
 implementation
 
@@ -45,16 +45,17 @@ BEGIN
 END;
 
 procedure edt(var f: FloatRAp; var d,z: TFloat32s; var v: TInt32s; n: integer);
-var
-	p, k, q: integer;
-	s, dx: TScalar;
-function vx(): TScalar; inline;
+function vx(p, q: integer): TScalar; inline;
 begin
 	if specialsingle(f[q]) or specialsingle(f[p])   then
 		result := infinity
 	else
 		result := ((f[q] + q*q) - (f[p] + p*p)) / (2.0*q - 2.0*p);
 end;
+var
+	p, k, q: integer;
+	s, dx: TScalar;
+
 begin
     (*# Find the lower envelope of a sequence of parabolas.
     #   f...source data (returns the Y of the parabola vertex at X)
@@ -76,11 +77,11 @@ begin
         # between the parabolas with vertices at (q,f[q]) and (p,f[p]).
         *)
         p := v[k];
-        s := vx();
+        s := vx(p,q);
         while (s <= z[k]) do begin
             k := k - 1;
             p := v[k];
-            s := vx();
+            s := vx(p,q);
         end;
         //# Add the new parabola to the envelope.
         k := k + 1;
@@ -104,7 +105,7 @@ end;
 
 Type
   TCluster = record
-		CenterXYZ: TVec3; //Center of cluster as defined by furthest from edge
+		CenterXYZ, CoMXYZ: TVec3; //Center of cluster as defined by furthest from edge
         mxThick: single; //Peak thickness of cluster
         SzMM3: single; //cluster volume in mm^3
   end;
@@ -314,6 +315,229 @@ begin
 	end; //slice
 end; //distanceFieldHF()
 
+function isIsotropic(var hdr: TNIFTIhdr; out voxMM: single): boolean;
+var
+	mn, mx: single;
+begin
+	mn := min(abs(hdr.pixdim[1]), min(abs(hdr.pixdim[2]), abs(hdr.pixdim[3])));
+	mx := max(abs(hdr.pixdim[1]), max(abs(hdr.pixdim[2]), abs(hdr.pixdim[3])));
+	voxMM := mn+(0.5*(mx-mn));
+	if (mn = 0) or (specialsingle(mn)) or ((mx/mn) > 1.02) then begin
+		printf('Image is anisotropic: reslice to isotropic grid.');
+		exit(false);
+	end;
+	exit(true);
+end;
+
+{$DEFINE THREAD3D} //requires DEFINE of MYTHREADS and USEBOUNDS
+{$IFDEF THREAD3D}
+procedure distanceFieldLRThreads(var hdr: TNIFTIhdr; var img: TFloat32s; bounds: TClusterBound; MaxThreads: integer = 1);
+//filter data in the X dimension (Left/Right)
+var
+	zLo, zHi, zPerThread: integer;
+procedure SubProc(ThreadIndex: PtrInt; Data: Pointer; Item: TMultiThreadProcItem);
+var
+	zStart, zEnd, si, colStart, colLen, s, r, cols: integer;
+	f: FloatRAp;
+	d,z : TFloat32s;
+	v: TInt32s;
+begin
+	zStart := zLo + (ThreadIndex * zPerThread);
+	if (zStart > zHi) then exit; //more threads than slices in Z direction
+	zEnd := zStart + zPerThread - 1; //e.g. if zStart=4 and zPerThread=1 then zEnd=4 
+	zEnd := min(zEnd, zHi); //final thread when slices in Z not evenly divisible by number of threads
+	//printf(format('LR %d..%d %d',[ThreadIndex, zStart, zEnd]));
+	cols := hdr.dim[1];
+	setlength(z, cols+1);
+	setlength(d, cols);
+	setlength(v, cols);
+	colStart := bounds.lo.x;
+	colLen := bounds.hi.x - bounds.lo.x + 1;
+	for s := zStart to zEnd do begin
+		si := (s * hdr.dim[2]); //rows per slice
+		for r := bounds.lo.y to bounds.hi.y do begin
+			f := @img[((r+si)*cols)+colStart];
+			edt(f, d, z, v, colLen);
+			//f := @img[(r+si)*cols];
+			//edt(f, d, z, v, cols);	
+		end; //rows, y, dim2
+	end; //slices, z, dim3
+end; //nested SubProc()
+begin
+	if (MaxThreads < 1) then MaxThreads := GetSystemThreadCount();
+	zLo := bounds.lo.z;
+	zHi := bounds.hi.z;
+	zPerThread := ceil((zHi-zLo+1)/MaxThreads);
+	ProcThreadPool.DoParallelNested(subproc,0,MaxThreads-1, nil, MaxThreads);
+end; //distanceFieldLRThreads()
+
+procedure distanceFieldAPThreads(var hdr: TNIFTIhdr; var img: TFloat32s; bounds: TClusterBound; MaxThreads: integer = 1);
+//filter data in the Y dimension (Anterior/Posterior)
+var
+	zLo, zHi, zPerThread: integer;
+procedure SubProc(ThreadIndex: PtrInt; Data: Pointer; Item: TMultiThreadProcItem);
+var
+	zStart, zEnd, colStart, colLen, x, y, k, s, r, rows, cols: integer;
+	f: FloatRAp;
+	d, z, img2D : TFloat32s;
+	v: TInt32s;
+begin
+	zStart := zLo + (ThreadIndex * zPerThread);
+	if (zStart > zHi) then exit; //more threads than slices in Z direction
+	zEnd := zStart + zPerThread -1; //e.g. if zStart=4 and zPerThread=1 then zEnd=4 
+	zEnd := min(zEnd, zHi); //final thread when slices in Z not evenly divisible by number of threads
+	//printf(format('AP %d',[ThreadIndex]));
+	cols := hdr.dim[2];
+	rows := hdr.dim[1];
+	setlength(z, cols+1);
+	setlength(d, cols);
+	setlength(v, cols);
+	setlength(img2D, rows*cols);
+	colStart := bounds.lo.y;
+	colLen := bounds.hi.y - bounds.lo.y + 1;
+	for s := zStart to zEnd do begin
+		//transpose
+		k := s * (rows * cols); //slice offset
+		for x := 0 to (cols-1) do begin
+			for y := 0 to (rows-1) do begin
+				img2D[x+(y*cols)] := img[k];
+				k := k + 1;
+			end;
+		end;
+		for r := 0 to (rows-1) do begin
+			{$IFDEF USEBOUNDS}		
+			f := @img2D[(r*cols)+colStart];
+			edt(f, d, z, v, colLen);
+			{$ELSE}	
+			f := @img2D[r*cols];
+			edt(f, d, z, v, cols);	
+			{$ENDIF}
+		end;
+		//transpose
+		k := s * (rows * cols); //slice offset
+		for x := 0 to (cols-1) do begin
+			for y := 0 to (rows-1) do begin
+				img[k] := img2D[x+(y*cols)];
+				k := k + 1;
+			end;
+		end;
+	end;
+end; //nested SubProc()
+begin
+	if (MaxThreads < 1) then MaxThreads := GetSystemThreadCount();
+	zLo := bounds.lo.z;
+	zHi := bounds.hi.z;
+	zPerThread := ceil((zHi-zLo+1)/MaxThreads);
+	ProcThreadPool.DoParallelNested(subproc,0,MaxThreads-1, nil, MaxThreads);
+end; //distanceFieldAPThreads()
+
+procedure distanceFieldHFThreads(var hdr: TNIFTIhdr; var img: TFloat32s; bounds: TClusterBound; MaxThreads: integer = 1);
+//filter data in the Z dimension (Head/Foot)
+//by far the most computationally expensive pass
+// unlike LR and AP, we must process 3rd (Z) and 4th (volume number) dimension separately
+var
+	yLo, yHi, yPerThread: integer;
+procedure SubProc(ThreadIndex: PtrInt; Data: Pointer; Item: TMultiThreadProcItem);
+var
+	yStart, yEnd, colStart, colLen, sx, sxy, x,y,k, s, r, rows, cols: integer;
+	f: FloatRAp;
+	d,z, img2D : TFloat32s;
+	v: TInt32s;
+begin
+	yStart := yLo + (ThreadIndex * yPerThread);
+	if (yStart > yHi) then exit; //more threads than slices in Z direction
+	yEnd := yStart + yPerThread -1;  //e.g. if zStart=4 and zPerThread=1 then zEnd=4
+	yEnd := min(yEnd, yHi); //final thread when slices in Z not evenly divisible by number of threads
+	//printf(format('HF %d',[ThreadIndex]));
+	//we could transpose [3,2,1] or [3,1,2] - latter improves cache?
+	cols := hdr.dim[3];
+	rows := hdr.dim[1];
+	sxy := hdr.dim[1] * hdr.dim[2];
+	setlength(z, cols+1);
+	setlength(d, cols);
+	setlength(v, cols);
+	setlength(img2D, rows*cols);
+	colStart := bounds.lo.z;
+	colLen := bounds.hi.z - bounds.lo.z + 1;
+	for s := yStart to yEnd do begin
+		//transpose
+		sx := (s * rows);
+		k := 0; //slice offset along Y axis
+		for x := 0 to (rows-1) do begin
+			for y := 0 to (cols-1) do begin
+				img2D[k] := img[x + sx + (y*sxy)];
+				k := k + 1;
+			end;
+		end;
+		for r := 0 to (rows-1) do begin
+			f := @img2D[(r*cols)+colStart];
+			edt(f, d, z, v, colLen);			
+		end;
+		//transpose
+		k := 0; //slice offset along Y axis
+		for x := 0 to (rows-1) do begin
+			for y := 0 to (cols-1) do begin
+				img[x + sx + (y*sxy)] := img2D[k];
+				k := k + 1;
+			end;
+		end;
+	end; //slice
+end; //nested SubProc()
+begin 
+	if (hdr.dim[3] < 2) then exit; //2D images have height and width but not depth
+	if (MaxThreads < 1) then MaxThreads := GetSystemThreadCount();
+	yLo := bounds.lo.y;
+	yHi := bounds.hi.y;
+	yPerThread := ceil((yHi-yLo+1)/MaxThreads);
+	ProcThreadPool.DoParallelNested(subproc,0,MaxThreads-1, nil, MaxThreads);
+end; //distanceFieldHFThreads()
+
+function distanceFieldVolume3D(var hdr: TNIFTIhdr; var img32: TFloat32s; MaxThreads: PtrInt = 0): boolean;
+var
+	bounds: TClusterBound;
+	i, vx: integer;
+	voxMM: single;
+begin
+	if (MaxThreads < 1) then MaxThreads := GetSystemThreadCount();
+	result := false;	
+	if not isIsotropic(hdr, voxMM) then
+		exit;
+	if not findBounds(hdr, img32, bounds) then begin
+		printf('Error: the threshold does not discriminate between air and object.');
+		exit;	
+	end;
+	vx := hdr.dim[1] * hdr.dim[2] * hdr.dim[3];
+	distanceFieldLRThreads(hdr, img32, bounds, MaxThreads);
+	distanceFieldAPThreads(hdr, img32, bounds, MaxThreads);
+	distanceFieldHFThreads(hdr, img32, bounds, MaxThreads);	
+	for i := 0 to (vx-1) do
+		img32[i] := sqrt(img32[i]) * voxMM;
+	result := true;	
+end;
+{$ELSE}
+function distanceFieldVolume3D(var hdr: TNIFTIhdr; var img32: TFloat32s; MaxThreads: PtrInt = 0): boolean;
+var
+	bounds: TClusterBound;
+	i, vx: integer;
+	voxMM: single;
+begin
+	result := false;	
+	if not isIsotropic(hdr, voxMM) then
+		exit;
+	if not findBounds(hdr, img32, bounds) then begin
+		printf('Error: the threshold does not discriminate between air and object.');
+		exit;	
+	end;
+	vx := hdr.dim[1] * hdr.dim[2] * hdr.dim[3];
+	distanceFieldLR(hdr, img32, bounds);
+	distanceFieldAP(hdr, img32, bounds);
+	distanceFieldHF(hdr, img32, bounds);	
+	for i := 0 to (vx-1) do
+		img32[i] := sqrt(img32[i]) * voxMM;
+	result := true;	
+end;
+{$ENDIF}
+
 procedure fixHdr(var hdr: TNIFTIhdr);
 begin
 	if hdr.pixdim[1] = 0 then hdr.pixdim[1] := 1;
@@ -341,16 +565,18 @@ begin
 	if length(c) < 1 then exit;
 	AssignFile(Txt, fnm);
 	Rewrite(Txt);
-	WriteLn(Txt, '# Thick3D interactive cluster table');
+	WriteLn(Txt, '# Depth3D interactive cluster table');
+	WriteLn(Txt, '#CoM=CenterOfMass, PT=PeakThickness');
 	//https://www.slicer.org/wiki/Coordinate_systems
 	//https://afni.nimh.nih.gov/afni/community/board/read.php?1,144396,144396
 	// NIfTI coordinates go from L>R, P>A, I>S
 	WriteLn(Txt, '#Coordinate order = RAS'); 
-	WriteLn(Txt, '#VolMM3    Th x     Th y     Th z    Peak     Label');
-	WriteLn(Txt, '#------- -------- -------- -------- -------- --------');
+	//WriteLn(Txt, '#VolMM3    Th x     Th y     Th z    Peak     Label');
+	WriteLn(Txt, '#VolMM3    PT x     PT y     PT z    Peak     Label     CoM x    CoM y    CoM z');
+	WriteLn(Txt, '#------- -------- -------- -------- -------- -------- -------- -------- -------- ');
 	for i := 0 to (length(c)-1) do begin
 		if (c[i].SzMM3 <= 0) then continue;
-		WriteLn(Txt, i2s(c[i].SzMM3)+f2s(c[i].CenterXYZ.x)+f2s(c[i].CenterXYZ.y)+f2s(c[i].CenterXYZ.z)+f2s(c[i].mxThick) +i2s(i+1));
+		WriteLn(Txt, i2s(c[i].SzMM3)+f2s(c[i].CenterXYZ.x)+f2s(c[i].CenterXYZ.y)+f2s(c[i].CenterXYZ.z)+f2s(c[i].mxThick) +i2s(i+1)+f2s(c[i].CoMXYZ.x)+f2s(c[i].CoMXYZ.y)+f2s(c[i].CoMXYZ.z));
 	end;	
 	CloseFile(Txt);
 end;
@@ -411,49 +637,16 @@ begin
 		end; //y
 	end; //z
 	//convert XYZ from voxels to mm
+	result.CoMXYZ.x := cog.x*hdr.srow_x[0]+cog.y*hdr.srow_x[1]+cog.z*hdr.srow_x[2]+hdr.srow_x[3];
+	result.CoMXYZ.y := cog.x*hdr.srow_y[0]+cog.y*hdr.srow_y[1]+cog.z*hdr.srow_y[2]+hdr.srow_y[3];
+	result.CoMXYZ.z := cog.x*hdr.srow_z[0]+cog.y*hdr.srow_z[1]+cog.z*hdr.srow_z[2]+hdr.srow_z[3];
 	cog := center;
 	result.CenterXYZ.x := cog.x*hdr.srow_x[0]+cog.y*hdr.srow_x[1]+cog.z*hdr.srow_x[2]+hdr.srow_x[3];
 	result.CenterXYZ.y := cog.x*hdr.srow_y[0]+cog.y*hdr.srow_y[1]+cog.z*hdr.srow_y[2]+hdr.srow_y[3];
 	result.CenterXYZ.z := cog.x*hdr.srow_z[0]+cog.y*hdr.srow_z[1]+cog.z*hdr.srow_z[2]+hdr.srow_z[3];
 end;
 
-function isIsotropic(var hdr: TNIFTIhdr; out voxMM: single): boolean;
-var
-	mn, mx: single;
-begin
-	mn := min(abs(hdr.pixdim[1]), min(abs(hdr.pixdim[2]), abs(hdr.pixdim[3])));
-	mx := max(abs(hdr.pixdim[1]), max(abs(hdr.pixdim[2]), abs(hdr.pixdim[3])));
-	voxMM := mn+(0.5*(mx-mn));
-	if (mn = 0) or (specialsingle(mn)) or ((mx/mn) > 1.02) then begin
-		printf('Image is anisotropic: reslice to isotropic grid.');
-		exit(false);
-	end;
-	exit(true);
-end;
-
-function distanceFieldVolume3D(var hdr: TNIFTIhdr; var img32: TFloat32s): boolean;
-var
-	bounds: TClusterBound;
-	i, vx: integer;
-	voxMM: single;
-begin
-	result := false;	
-	if not isIsotropic(hdr, voxMM) then
-		exit;
-	if not findBounds(hdr, img32, bounds) then begin
-		printf('Error: the threshold does not discriminate between air and object.');
-		exit;	
-	end;
-	vx := hdr.dim[1] * hdr.dim[2] * hdr.dim[3];
-	distanceFieldLR(hdr, img32, bounds);
-	distanceFieldAP(hdr, img32, bounds);
-	distanceFieldHF(hdr, img32, bounds);	
-	for i := 0 to (vx-1) do
-		img32[i] := sqrt(img32[i]) * voxMM;
-	result := true;	
-end;
-
-function distanceFieldVolume(var hdr: TNIFTIhdr; var img: TUInt8s;  txtnam: string = '';  threshold: single = 0.5): boolean;
+function distanceFieldVolume(var hdr: TNIFTIhdr; var img: TUInt8s;  txtnam: string = '';  threshold: single = 0.5; MaxThreads: PtrInt = 0): boolean;
 //process a 3D scalar volume
 var
 	i, j, o, vx, nvol: integer;
@@ -466,7 +659,16 @@ begin
 	img32 := TFloat32s(img);
 	nvol := max(1, hdr.dim[4]);
 	vx := hdr.dim[1] * hdr.dim[2] * hdr.dim[3]*nvol;
-	if (threshold > 0) then begin	
+	if (specialsingle(threshold)) then begin //./Depth3D -t inf ./test/sregion4.nii.gz
+		printf('Proportional edges not recommended (Try supersampling)');
+		for i := 0 to (vx-1) do
+			if img32[i] >= 0.5 then
+				img32[i] := infinity
+			else if img32[i] > 0.0 then
+				img32[i] := img32[i]
+			else
+				img32[i] := 0;	
+	end else if (threshold > 0) then begin	
 		for i := 0 to (vx-1) do
 			if img32[i] >= threshold then
 				img32[i] := infinity
@@ -485,13 +687,13 @@ begin
 		for i := 0 to (nvol-1) do begin
 			o := i*vx; //offset for 3D volume in 4D array
 			img32v3D := copy(img32, o, vx);
-			result := distanceFieldVolume3D(hdr,img32v3D);
+			result := distanceFieldVolume3D(hdr,img32v3D, MaxThreads);
 			if not result then exit;
 			for j := 0 to (vx-1) do
 				img32[j+o] := img32v3D[j];	
 		end;	
 	end else	
-		result := distanceFieldVolume3D(hdr,img32);
+		result := distanceFieldVolume3D(hdr,img32, MaxThreads);
 	if not result then exit;
 	if  (txtnam = '') then exit; 
 	setlength(c, nvol);
@@ -548,11 +750,11 @@ begin
 	if not isIsotropic(hdr, voxMM) then
 		exit;
 	if (hdr.datatype <> kDT_INT8) and (hdr.datatype <> kDT_UINT8) and (hdr.datatype <> kDT_INT16) and (hdr.datatype <> kDT_UINT16) and (hdr.datatype <> kDT_INT32) then begin
-		printf('distance fields for atlases (threshold=0) expects integer datatypes.');
+		printf('Distance fields for atlases (threshold=0) expects integer datatypes.');
 		exit;
 	end;
 	if hdr.dim[4] > 1 then begin
-		printf('distance fields for atlases are expected to be 3D not 4D images.');
+		printf('Distance fields for atlases are expected to be 3D not 4D images.');
 		exit;
 	end;
 	fixHdr(hdr);

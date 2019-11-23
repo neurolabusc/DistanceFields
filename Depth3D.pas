@@ -1,6 +1,6 @@
-program Thick3D;
+program Depth3D;
 //Compute each voxels distance from edge of cluster
-//   fpc -CX -Xs -XX -O3 Thick3D
+//   fpc -CX -Xs -XX -O3 Depth3D
 
 {$mode Delphi} //{$mode objfpc}
 {$H+}
@@ -9,20 +9,19 @@ uses
 	cthreads, cmem, // the c memory manager is on some systems much faster for multi-threading
 	{$endif}
 	distance_field, SimdUtils, dateutils, StrUtils, sysutils, Classes, nifti_types, 
-	nifti_loadsave, nifti_foreign;
+	nifti_loadsave, nifti_foreign, resize;
 
 const
     kEXIT_SUCCESS = 0;
     kEXIT_FAIL = 1;
     kEXIT_PARTIALSUCCESS = 2; //processed some but not all input files
 
-function distanceFieldAll(fnm, outName: string; isGz, is3D, isImg, isTxt: boolean; threshold: single = 0.5; maxthreads: integer = 0): boolean;
+function distanceFieldAll(fnm, outName: string; isGz, is3D, isImg, isTxt: boolean; threshold: single = 0.5; maxthreads: integer = 0; superSample: integer = 1): boolean;
 var
 	hdr: TNIFTIhdr;
 	img: TUInt8s;
 	isInputNIfTI: boolean;
 	txtNam, ext: string;
-	//startTime : TDateTime;
 begin
 	result := false;
 	if not loadVolumes(fnm, hdr, img, isInputNIfTI) then exit;
@@ -42,15 +41,27 @@ begin
 	if isTxt then
 		txtNam := outName+'.1D';
 	hdr.intent_code := kNIFTI_INTENT_NONE; //just in case input is labelled map
-	//startTime := Now;
-	if (threshold = 0) then
+	if (superSample > 1) then begin
+		if (threshold = 0) or (hdr.dim[4] > 1) then begin 
+			writeln('Error: super sampling not supported for atlases or 4D images.');
+			exit;
+		end;
+		changeDataType(hdr, img, kDT_FLOAT32);
+		result := ShrinkOrEnlarge(hdr, img, superSample, maxthreads);
+		if not result then begin
+			writeln('Supersampling error');
+			exit;
+		end;
+		writeln(format('Depth estimated on x%d supersampling (%d*%d*%d).',[superSample, hdr.dim[1], hdr.dim[2], hdr.dim[3] ]));
+		result := distanceFieldVolume(hdr, img, txtNam, threshold, maxthreads);
+		ShrinkOrEnlarge(hdr, img, 1.0/superSample, maxthreads);
+	end else if (threshold = 0) then
 		result := distanceFieldAtlas(hdr, img, txtNam, maxthreads)
 	else
-		result := distanceFieldVolume(hdr, img, txtNam, threshold);
+		result := distanceFieldVolume(hdr, img, txtNam, threshold, maxthreads);
 	if not result then
 		exit;
-	//writeln(format('Filter required %.3f seconds.', [MilliSecondsBetween(Now,startTime)/1000.0]));
-    ext := upcase(ExtractFileExt(fnm));
+	ext := upcase(ExtractFileExt(fnm));
 	if (ext = '.GZ') then
 		fnm := changefileext(fnm,''); //e.g. file.raw.gz -> file.nii not file.raw.nii
 	if saveNii(outName, hdr, img, isGz, is3D) then
@@ -65,7 +76,7 @@ begin
     {$IFDEF WINDOWS}
     exeName := ChangeFileExt(exeName, ''); //i2nii.exe -> i2nii
     {$ENDIF}
-    writeln('Chris Rorden''s '+exeName+' v1.0.20191118');
+    writeln('Chris Rorden''s '+exeName+' v1.0.20191123');
     writeln(' see https://prideout.net/blog/distance_fields/');
 	writeln(format('usage: %s [options] <in_file(s)>', [exeName]));
 	writeln('Reads volume and computes distance fields');
@@ -77,6 +88,7 @@ begin
     writeln(' -t : threshold, less extreme values treated as outside (default 0.5)');
     writeln('       set to 0 for separate field for each region of an atlas');
     writeln(' -p : parallel threads (0=optimal, 1=one, 5=five, default 0)');
+    writeln(' -s : supersample for continuous images (1=x1, 2=x2, 5=x5, default 1)');
     writeln(' -z : gz compress images (y/n, default n)');
     writeln(' Examples :');
     {$IFDEF WINDOWS}
@@ -87,8 +99,10 @@ begin
     InDir := './test/';
     {$ENDIF} 
     writeln(format('  %s -t 0 %sAICHA.nii.gz', [exeName, InDir]));
+    writeln(format('  %s -t 0 %sinia19-NeuroMaps.nii.gz', [exeName, InDir]));
     writeln(format('  %s -t 0.5 %s4Dgraywhite.nii.gz', [exeName, InDir]));
-    writeln(format('  %s -t 0.5 %sanisotropic.nii.gz', [exeName, InDir]));
+    writeln(format('  %s -t 0.5 %sisotropic.nii.gz', [exeName, InDir]));
+    writeln(format('  %s -t 0.25 -s 3 %savg152T1_gray.nii.gz', [exeName, InDir]));
     writeln(format('  %s -o "%sOutputImg" -t 0.5 "%sname with spaces"', [exeName, OutDir, InDir]));     	
 end;
 
@@ -103,6 +117,7 @@ var
     startTime: TDateTime;
     maxthreads: integer = 0;
     threshold: single = 0.5; 
+    superSample: integer = 1;
     outName: string = '';
     s, v: string;
     c: char;
@@ -118,8 +133,7 @@ begin
         if length(s) < 1 then continue; //possible?
         if s[1] <> '-' then begin
             nAttempt := nAttempt + 1;
-            //dx(fnm, outDir: string; isGz, is3D: boolean): integer;
-            if distanceFieldAll(s, outName, isGz, is3D, isImg, isTxt, threshold, maxthreads) then
+            if distanceFieldAll(s, outName, isGz, is3D, isImg, isTxt, threshold, maxthreads, superSample) then
                 nOK := nOK + 1;
             continue;
         end;
@@ -142,7 +156,9 @@ begin
            		isTxt := true;
            		isImg := false; 
             end;
-        end;	
+        end;
+        if c =  'S' then
+            superSample := strtointdef(v, 1);    
         if c =  'T' then
             threshold := strtofloatdef(v, 0.5);    
         if c =  'Z' then
