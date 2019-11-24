@@ -8,12 +8,12 @@ interface
 uses  
 	{$IFDEF MYTHREADS}mtprocs,mtpcpu,{$ENDIF}
 	{$IFNDEF UNIX}system, {$ENDIF}
-	dateutils, Math, VectorMath, SimdUtils, StrUtils, 
+	dateutils, Math, VectorMath, SimdUtils, StrUtils, clusters, sortu,
 	SysUtils, Classes, nifti_types, nifti_loadsave, nifti_foreign;
   
 
 function distanceFieldAtlas(var hdr: TNIFTIhdr; var img: TUInt8s; txtnam: string = ''; MaxThreads: PtrInt = 0): boolean;
-function distanceFieldVolume(var hdr: TNIFTIhdr; var img: TUInt8s; txtnam: string = ''; threshold: single = 0.5; MaxThreads: PtrInt = 0): boolean;
+function distanceFieldVolume(var hdr: TNIFTIhdr; var img: TUInt8s; out imgIntensityThresholded: TUInt8s; txtnam: string = ''; threshold: single = 0.5; MaxThreads: PtrInt = 0; clusterType: integer = 26; smallestClusterVox: integer = 1): boolean;
 
 implementation
 
@@ -105,9 +105,9 @@ end;
 
 Type
   TCluster = record
-		CenterXYZ, CoMXYZ: TVec3; //Center of cluster as defined by furthest from edge
-        mxThick: single; //Peak thickness of cluster
-        SzMM3: single; //cluster volume in mm^3
+		CenterXYZ, CoMXYZ, PeakXYZ: TVec3; //Center of cluster as defined by furthest from edge
+        mxThick, Peak: single; //Peak thickness of cluster
+        SzVox: single; //cluster volume in voxels
   end;
   TClusters = array of TCluster;
   TClusterBound = record
@@ -549,46 +549,77 @@ begin
 	if hdr.dim[4] < 1 then hdr.dim[4] := 1;
 end;
   
-procedure saveClusterAsTxt(fnm: string; var c: TClusters);
+procedure saveClusterAsTxt(var hdr: TNIFTIhdr; fnm: string; var c: TClusters);
+//https://www.slicer.org/wiki/Coordinate_systems
+//https://afni.nimh.nih.gov/afni/community/board/read.php?1,144396,144396
+// NIfTI coordinates go from L>R, P>A, I>S
 function f2s(f: single): string;
 begin
-	result := PadLeft(FloatToStrf(f,ffFixed, 8,2), 8)+' ';
+	result := PadLeft(FloatToStrf(f,ffFixed, 8,2), 7)+' ';
 end;
 function i2s(f: single): string;
 begin
-	result := PadLeft(Inttostr(round(f)), 8)+' ';
+	result := PadLeft(Inttostr(round(f)), 7)+' ';
+end;
+function tableStr(c1: TCluster; n: integer): string;
+//text string for table
+begin
+	result := i2s(c1.SzVox)+f2s(c1.CenterXYZ.x)+f2s(c1.CenterXYZ.y)+f2s(c1.CenterXYZ.z)+f2s(c1.mxThick) +i2s(n+1)+f2s(c1.CoMXYZ.x)+f2s(c1.CoMXYZ.y)+f2s(c1.CoMXYZ.z);
+	if (c1.Peak = 0) then exit;
+	result := result + f2s(c1.Peak)+f2s(c1.PeakXYZ.x)+ f2s(c1.PeakXYZ.y)+ f2s(c1.PeakXYZ.z)
+end;
+function headerStr(c1: TCluster): string;
+//text string for table
+begin
+	result := '#VolVox   MaxD x MaxD y  MaxD z MaxDpth   Label   CoG x   CoG y   CoG z';
+	if (c1.Peak = 0) then exit;
+	result := result + '     Max   Max x   Max y   Max z'
+end;
+function volStr(): string;
+//text string for table
+begin
+	result := format('#VoxelVolume %gmm^3 (%gx%gx%g)',[hdr.pixdim[1]*hdr.pixdim[2]*hdr.pixdim[3],hdr.pixdim[1], hdr.pixdim[2],hdr.pixdim[3] ]);
 end;
 var
 	Txt: TextFile;
 	i: integer;  
 begin
 	if length(c) < 1 then exit;
+	if fnm = '-' then begin
+		printf(volStr);
+		printf(headerStr(c[0]));
+		for i := 0 to (length(c)-1) do begin
+			printf(tableStr(c[i], i));
+		end;
+		exit;
+	end;
+	exit;//TO DO
 	AssignFile(Txt, fnm);
 	Rewrite(Txt);
 	WriteLn(Txt, '# Depth3D interactive cluster table');
 	WriteLn(Txt, '#CoM=CenterOfMass, PT=PeakThickness');
-	//https://www.slicer.org/wiki/Coordinate_systems
-	//https://afni.nimh.nih.gov/afni/community/board/read.php?1,144396,144396
-	// NIfTI coordinates go from L>R, P>A, I>S
 	WriteLn(Txt, '#Coordinate order = RAS'); 
+	WriteLn(Txt, volStr());
+	WriteLn(Txt, headerStr(c[0]));
 	//WriteLn(Txt, '#VolMM3    Th x     Th y     Th z    Peak     Label');
-	WriteLn(Txt, '#VolMM3    PT x     PT y     PT z    Peak     Label     CoM x    CoM y    CoM z');
-	WriteLn(Txt, '#------- -------- -------- -------- -------- -------- -------- -------- -------- ');
+	//WriteLn(Txt, '#VolVox    PT x     PT y     PT z   MaxThick  Label    CoM x    CoM y    CoM z');
+	//WriteLn(Txt, '#------- -------- -------- -------- -------- -------- -------- -------- -------- ');
 	for i := 0 to (length(c)-1) do begin
-		if (c[i].SzMM3 <= 0) then continue;
-		WriteLn(Txt, i2s(c[i].SzMM3)+f2s(c[i].CenterXYZ.x)+f2s(c[i].CenterXYZ.y)+f2s(c[i].CenterXYZ.z)+f2s(c[i].mxThick) +i2s(i+1)+f2s(c[i].CoMXYZ.x)+f2s(c[i].CoMXYZ.y)+f2s(c[i].CoMXYZ.z));
+		if (c[i].SzVox <= 0) then continue;
+		WriteLn(Txt, tableStr(c[i], i));
+		//WriteLn(Txt, i2s(c[i].SzVox)+f2s(c[i].CenterXYZ.x)+f2s(c[i].CenterXYZ.y)+f2s(c[i].CenterXYZ.z)+f2s(c[i].mxThick) +i2s(i+1)+f2s(c[i].CoMXYZ.x)+f2s(c[i].CoMXYZ.y)+f2s(c[i].CoMXYZ.z));
 	end;	
 	CloseFile(Txt);
 end;
 
-function clusterCenter(var hdr: TNIFTIhdr; var img: TFloat32s; vol: integer = 0): TCluster;
+function clusterCenter(var hdr: TNIFTIhdr; var img, imgIntensity: TFloat32s; vol: integer = 0): TCluster;
 // hdr: NIfTI header specifies image dimensions
 // img: Thickness map
 // mxThick: reports maximum thickness for entire cluster
 // vol: select volume to inspect (for 4D volumes, indexed from 0).
 // result: location of thickest point in cluster, for ties this will be near center of mass
 var
-	x,y,z, i, n: integer;
+	x,y,z, i, n: int64;
 	s, dx, mnDx, mxThick: single;
 	sum, cog, cogDx, center: TVec3;
 begin
@@ -614,7 +645,7 @@ begin
 		end; //y
 	end; //z
 	result.mxThick := mxThick;
-	result.SzMM3 := n * hdr.pixdim[1] * hdr.pixdim[2] * hdr.pixdim[3]; 
+	result.SzVox := n; //TODO
 	if n < 1 then
 		exit;
 	cog := sum / n;
@@ -644,22 +675,157 @@ begin
 	result.CenterXYZ.x := cog.x*hdr.srow_x[0]+cog.y*hdr.srow_x[1]+cog.z*hdr.srow_x[2]+hdr.srow_x[3];
 	result.CenterXYZ.y := cog.x*hdr.srow_y[0]+cog.y*hdr.srow_y[1]+cog.z*hdr.srow_y[2]+hdr.srow_y[3];
 	result.CenterXYZ.z := cog.x*hdr.srow_z[0]+cog.y*hdr.srow_z[1]+cog.z*hdr.srow_z[2]+hdr.srow_z[3];
+	result.PeakXYZ := Vec3 (0,0,0);
+	result.Peak := 0;
+	if imgIntensity = nil then exit;
+	i := vol * hdr.dim[1] * hdr.dim[2] * hdr.dim[3];
+	n := 0;
+	cog := Vec3 (0,0,0);
+	for z := 0 to (max(1, hdr.dim[3])-1) do begin
+		for y := 0 to (hdr.dim[2] -1) do begin
+			for x := 0 to (hdr.dim[1]-1) do begin
+				s := img[i];
+				i += 1;
+				if (s = 0) then continue; //not in cluster
+				s := abs(imgIntensity[i-1]);
+				if (s <= result.Peak) then continue; 
+				result.Peak := s;
+				cog := Vec3(x,y,z);
+				n := i - 1; //peak location in 1D array
+			end; //x
+		end; //y
+	end; //z
+	if (img[n] < 0) then
+		result.Peak := - result.Peak; //peak computed on absolute 
+	result.PeakXYZ.x := cog.x*hdr.srow_x[0]+cog.y*hdr.srow_x[1]+cog.z*hdr.srow_x[2]+hdr.srow_x[3];
+	result.PeakXYZ.y := cog.x*hdr.srow_y[0]+cog.y*hdr.srow_y[1]+cog.z*hdr.srow_y[2]+hdr.srow_y[3];
+	result.PeakXYZ.z := cog.x*hdr.srow_z[0]+cog.y*hdr.srow_z[1]+cog.z*hdr.srow_z[2]+hdr.srow_z[3];
+	//find peaks
 end;
 
-function distanceFieldVolume(var hdr: TNIFTIhdr; var img: TUInt8s;  txtnam: string = '';  threshold: single = 0.5; MaxThreads: PtrInt = 0): boolean;
-//process a 3D scalar volume
+function removeSmallClusters(var hdr: TNIFTIhdr; var img: TUInt8s; threshold: single = 0.5; clusterType: integer = 26; smallestClusterVox: integer = 1): boolean;
 var
-	i, j, o, vx, nvol: integer;
-	img32, img32v3D: TFloat32s;
+	i, vx, nvol: int64;
+	clusterNumber: integer;
+	img32: TFloat32s;
+	clusterImg: TInt32s;
+begin
+	result := true;
+	nvol := max(1, hdr.dim[4]);
+	if (nvol > 1) then begin
+		printf('Cluster thresholds not yet supported for 4D datasets');
+		exit(false);
+	end;
+	printf(format('Removing clusters smaller than %d voxels (%gmm^3)', [smallestClusterVox, smallestClusterVox*hdr.pixdim[1]*hdr.pixdim[2]*hdr.pixdim[3] ]));
+	img32 := TFloat32s(img);
+	vx := hdr.dim[1] * hdr.dim[2] * hdr.dim[3]*nvol;
+	if (threshold > 0) then begin	
+		for i := 0 to (vx-1) do
+			if img32[i] < threshold then
+				img32[i] := 0;
+	end else begin
+		for i := 0 to (vx-1) do
+			if img32[i] > threshold then
+				img32[i] := 0;	
+	end;
+	if smallestClusterVox < 2 then exit;
+	result := Clusterize(img32, hdr.dim[1], hdr.dim[2], hdr.dim[3], clusterNumber, clusterImg, clusterType,  smallestClusterVox);
+	if result then
+		result := (clusterNumber > 0);
+	if not result then begin
+		printf('No voxels survive cluster threshold');
+		exit;
+	end;
+	for i := 0 to (vx-1) do
+		if clusterImg[i] = 0 then //not part of cluster
+			img32[i] := 0;		
+end;
+
+procedure SortClusters(var clusters: TClusters);
+var
+   s: TSortArray;
+   i, n: integer;
+   inClust: TClusters;
+begin
+     n := length(clusters);
+     if n < 1 then exit;
+     setlength(inClust, n);
+     inClust := copy(clusters, 0, n);
+     setlength(s, n);
+     for i := 0 to (n-1) do begin
+         s[i].index:=0;
+         //if SortClustersBySize then
+            s[i].value := inClust[i].SzVox
+         //else
+         //    s[i].value := inClust[i].Peak;
+     end;
+     SortArray(s);
+     for i := 0 to (n-1) do
+         clusters[n-i-1] := inClust[s[i].index];
+     s := nil;
+     inClust := nil;
+end;
+
+function clusterReport(var hdr: TNIFTIhdr; var img32, thickImg32: TFloat32s; txtnam: string; clusterType: integer): boolean;
+var
+	j, vx: int64;
+	i, clusterNumber: integer;
+	clusterImg: TInt32s;
+	singleThickImg32: TFloat32s;
 	c: TClusters;
 begin
+	if (txtnam = '') or (img32 = nil) or (thickImg32 = nil) then exit(true);
+	vx := hdr.dim[1] * hdr.dim[2] * hdr.dim[3];
+	//if (length(img32) <> vx) or (length(thickImg32) <> vx) then exit; //img32 length is for TUInt8s
+	result := Clusterize(thickImg32, hdr.dim[1], hdr.dim[2], hdr.dim[3], clusterNumber, clusterImg, clusterType, 0);
+	if (not result) or (clusterNumber < 1) then begin
+		printf('No clusters survive');
+		exit;
+	end;
+	//printf(format('%d clusters', [clusterNumber]));
+	setlength(c, clusterNumber);
+	for i := 0 to (clusterNumber-1) do begin
+		singleThickImg32 := copy(thickImg32, 0, vx);
+		for j := 0 to (vx-1) do
+			if clusterImg[j] <> (i+1) then
+				singleThickImg32[j] := 0; //zero all voxels from other clusters	
+		c[i] := clusterCenter(hdr, singleThickImg32, img32);
+	end; 
+	SortClusters(c);
+	saveClusterAsTxt(hdr, txtnam, c);
+end;
+
+function distanceFieldVolume(var hdr: TNIFTIhdr; var img: TUInt8s; out imgIntensityThresholded: TUInt8s;  txtnam: string = '';  threshold: single = 0.5; MaxThreads: PtrInt = 0; clusterType: integer = 26; smallestClusterVox: integer = 1): boolean;
+//process a 3D scalar volume
+var
+	i, j, o, vx, nvol: int64;
+	img32, img32v3D: TFloat32s;
+begin
 	result := false;
+	imgIntensityThresholded := nil;
+	if (specialsingle(threshold)) then begin
+		printf('Threshold does not make sense.');
+		exit;
+	end;
 	fixHdr(hdr);
 	changeDataType(hdr, img, kDT_FLOAT32);
+	if not removeSmallClusters(hdr,img, threshold, clusterType, smallestClusterVox) then
+		exit;
 	img32 := TFloat32s(img);
 	nvol := max(1, hdr.dim[4]);
+	img32v3D := nil;
 	vx := hdr.dim[1] * hdr.dim[2] * hdr.dim[3]*nvol;
-	if (specialsingle(threshold)) then begin //./Depth3D -t inf ./test/sregion4.nii.gz
+	if  (txtnam = '') and (nvol > 1) then begin
+		printf('Cluster reports not yet supported for 4D datasets');
+		exit;
+	end;
+	if nvol = 1 then begin
+		setlength(imgIntensityThresholded, vx*4);
+		img32v3D := TFloat32s(imgIntensityThresholded);
+		for i := 0 to (vx -1) do
+			img32v3D[i] := img32[i];
+	end;
+	(*if (specialsingle(threshold)) then begin //./Depth3D -t inf ./test/sregion4.nii.gz
 		printf('Proportional edges not recommended (Try supersampling)');
 		for i := 0 to (vx-1) do
 			if img32[i] >= 0.5 then
@@ -668,7 +834,8 @@ begin
 				img32[i] := img32[i]
 			else
 				img32[i] := 0;	
-	end else if (threshold > 0) then begin	
+	end else*)
+	if (threshold > 0) then begin	
 		for i := 0 to (vx-1) do
 			if img32[i] >= threshold then
 				img32[i] := infinity
@@ -691,15 +858,18 @@ begin
 			if not result then exit;
 			for j := 0 to (vx-1) do
 				img32[j+o] := img32v3D[j];	
-		end;	
-	end else	
+		end;
+		img32v3D := nil; //release	
+	end else begin
 		result := distanceFieldVolume3D(hdr,img32, MaxThreads);
-	if not result then exit;
-	if  (txtnam = '') then exit; 
+		clusterReport(hdr, img32v3D, img32, txtnam, clusterType);
+	end;
+	//if not result then exit;
+	(*if  (txtnam = '') then exit; 
 	setlength(c, nvol);
 	for i := 0 to (nvol-1) do
 		c[i] := clusterCenter(hdr, img32, i);
-	saveClusterAsTxt(txtnam, c);
+	saveClusterAsTxt(txtnam, c);*)
 end;
 
 // 4 core machine
@@ -722,7 +892,7 @@ procedure SubProc(Index: PtrInt; Data: Pointer; Item: TMultiThreadProcItem);
 procedure SubProc(Index: PtrInt);
 {$ENDIF}
   var
-  	img32: TFloat32s;
+  	img32, unusedImg32: TFloat32s;
   	j: integer;
   	bounds: TClusterBound;	
   begin
@@ -742,7 +912,8 @@ procedure SubProc(Index: PtrInt);
 			if (img32[j] > 0) then //this voxel is inside region "Index"
 				out32[j] := img32[j];
 		if  txtnam = '' then exit;
-		c[Index-1] := clusterCenter(hdr, img32); 
+		unusedImg32 := nil; //atlas regions do not have a peak intensity
+		c[Index-1] := clusterCenter(hdr, img32, unusedImg32); 
 		c[Index-1].mxThick := sqrt(c[Index-1].mxThick) * voxMM;	
   end; //nested SubProc()	
 begin
@@ -782,7 +953,7 @@ begin
 		out32[i] := 0; //assume all voxels outside atlas
 	setlength(c, mx);
 	for i := 0 to (mx-1) do
-		c[i].SzMM3 := 0; //skip for sparse atlases
+		c[i].SzVox := 0; //skip for sparse atlases
 	{$IFDEF MYTHREADS}
 	printf(format('Threaded filter of atlas with %d..%d regions',[mn,mx]));
 	ProcThreadPool.DoParallelNested(subproc,mn,mx, nil, MaxThreads);
@@ -795,7 +966,7 @@ begin
 		out32[i] := sqrt(out32[i]) * voxMM;		
 	result := true;
 	if  txtnam = '' then exit;
-	saveClusterAsTxt(txtnam, c);	
+	saveClusterAsTxt(hdr, txtnam, c);	
 end;
 
 end.
