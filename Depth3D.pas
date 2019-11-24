@@ -19,7 +19,7 @@ const
     kText_No = 0; //do not create text report
     kText_Yes = 1; //create text report and image
     kText_Screen = 2; //show text report on screen but do not create files
-    kSave_Thickness = 0;
+    kSave_Depth = 0;
     kSave_Intensity = 1;
     kSave_Both = 2;
     kSave_None = 3;
@@ -46,7 +46,7 @@ begin
 		if isImg = kSave_Intensity then
 			outName := extractfilepath(fnm)+'thresh_'+extractfilename(changefileext(fnm,''))
 		else
-			outName := extractfilepath(fnm)+'thick_'+extractfilename(changefileext(fnm,''))
+			outName := extractfilepath(fnm)+'depth_'+extractfilename(changefileext(fnm,''))
 	end else
 		outName := changefileext(outName,'');
 	//handle double extensions: img.nii.gz and img.BRIK.gz
@@ -88,7 +88,7 @@ begin
 		result := distanceFieldVolume(hdr, img, intensityImg, txtNam, threshold, maxthreads, clusterType, smallestClusterVox);
 	if not result then exit;
 	if (isImg = kSave_None) then exit;
-	if (isImg = kSave_Thickness) or (isImg = kSave_Both) then 
+	if (isImg = kSave_Depth) or (isImg = kSave_Both) then 
 		result := saveNii(outName, hdr, img, isGz, is3D);
 	if not result then  exit;
 	if (intensityImg = nil) and ((isImg = kSave_Intensity) or (isImg = kSave_Both)) then begin
@@ -118,13 +118,13 @@ begin
     writeln(' -3 : save 4D data as 3D files (y/n, default n)');
     writeln(' -c : connectivity neighbors (6=faces, 18=edges, 26=corners, default 26)');
     writeln(' -h : show help');
-    writeln(' -o : output name (omit to save as input name with "thick_" prefix)');
+    writeln(' -o : output name (omit to save as input name with "depth_" prefix)');
     writeln(' -r : report table (y/n/s: yes, no, screen, default n)');
     writeln(' -t : threshold, less extreme values treated as outside (default 0.5)');
     writeln('       set to 0 for separate field for each region of an atlas');
     writeln(' -m : minimum cluster extent in voxels (default 1)');
     writeln(' -p : parallel threads (0=optimal, 1=one, 5=five, default 0)');
-    writeln(' -s : save images (t,i,b,n: thickness, intensity, both, none, default t) ');
+    writeln(' -s : save images (d,i,b,n: depth, intensity, both, none, default t) ');
     writeln(' -u : upsample for continuous images (1=x1, 2=x2, 5=x5, default 1)');
     writeln(' -z : gz compress images (y/n, default n)');
     writeln(' Examples :');
@@ -151,7 +151,7 @@ var
     is3D: boolean = false;
     isGz: boolean = false;
     isTxt: integer = kText_No;
-    isImg: integer = kSave_Thickness;
+    isImg: integer = kSave_Depth;
     isShowHelp: boolean = false;
     smallestClusterVox: integer = 1;
     startTime: TDateTime;
@@ -204,7 +204,7 @@ begin
         end;
         if c =  'S' then begin
             if upcase(v[1]) = 'T' then
-            	isImg := kSave_Thickness;	
+            	isImg := kSave_Depth;	
             if upcase(v[1]) = 'I' then
             	isImg := kSave_Intensity;
             if upcase(v[1]) = 'B' then

@@ -25,13 +25,13 @@ OPTIONS
  -3 : save 4D data as 3D files (y/n, default n)
  -c : connectivity neighbors (6=faces, 18=edges, 26=corners, default 26)
  -h : show help
- -o : output name (omit to save as input name with "thick_" prefix)
+ -o : output name (omit to save as input name with "depth_" prefix)
  -r : report table (y/n/s: yes, no, screen, default n)
  -t : threshold, less extreme values treated as outside (default 0.5)
        set to 0 for separate field for each region of an atlas
  -m : minimum cluster extent in voxels (default 1)
  -p : parallel threads (0=optimal, 1=one, 5=five, default 0)
- -s : save images (t,i,b,n: thickness, intensity, both, none, default t) 
+ -s : save images (t,i,b,n: depth, intensity, both, none, default t) 
  -u : upsample for continuous images (1=x1, 2=x2, 5=x5, default 1)
  -z : gz compress images (y/n, default n)
  Examples :
@@ -48,7 +48,7 @@ OPTIONS
 
 ### Object Center
 
-In this example, we compute the peak thickness location for a C-shaped region. The image below shows that a nicely representative location has been identified. In contrast, the center of mass is outside the object.
+In this example, we compute the peak depth location for a C-shaped region. The image below shows that a nicely representative location has been identified. In contrast, the center of mass is outside the object.
 
 ```
 Depth3D -t 0.5 -r y ./test/region4.nii.gz 
@@ -58,12 +58,9 @@ Depth3D -t 0.5 -r y ./test/region4.nii.gz
 Generates this table:
 
 ```
-# Depth3D interactive cluster table
-#CoM=CenterOfMass, PT=PeakThickness
-#Coordinate order = RAS
-#VolMM3    PT x     PT y     PT z    Peak     Label     CoM x    CoM y    CoM z
-#------- -------- -------- -------- -------- -------- -------- -------- -------- 
-   29345    31.00   -57.00   -15.00     7.35        1    20.85   -12.59    -3.34 
+#VoxelVolume 1mm^3 (1x1x1)
+#VolVox   MaxD x MaxD y  MaxD z MaxDpth   Label   CoG x   CoG y   CoG z     Max   Max x   Max y   Max z
+  29345   31.00  -57.00  -15.00    7.35       1   20.85  -12.59   -3.34    1.00   33.00  -76.00  -12.00 
 ```
 
 ![alt tag](https://github.com/neurolabusc/DistanceFields/blob/master/region4.png)
