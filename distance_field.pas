@@ -323,7 +323,7 @@ begin
 	mx := max(abs(hdr.pixdim[1]), max(abs(hdr.pixdim[2]), abs(hdr.pixdim[3])));
 	voxMM := mn+(0.5*(mx-mn));
 	if (mn = 0) or (specialsingle(mn)) or ((mx/mn) > 1.02) then begin
-		printf('Image is anisotropic: reslice to isotropic grid.');
+		printf(format('Image is anisotropic: reslice to isotropic grid (%g*%g*%g).', [hdr.pixdim[1], hdr.pixdim[2], hdr.pixdim[3]]));
 		exit(false);
 	end;
 	exit(true);
@@ -716,7 +716,6 @@ begin
 		printf('Cluster thresholds not yet supported for 4D datasets');
 		exit(false);
 	end;
-	printf(format('Removing clusters smaller than %d voxels (%gmm^3)', [smallestClusterVox, smallestClusterVox*hdr.pixdim[1]*hdr.pixdim[2]*hdr.pixdim[3] ]));
 	img32 := TFloat32s(img);
 	vx := hdr.dim[1] * hdr.dim[2] * hdr.dim[3]*nvol;
 	if (threshold > 0) then begin	
@@ -729,6 +728,7 @@ begin
 				img32[i] := 0;	
 	end;
 	if smallestClusterVox < 2 then exit;
+	printf(format('Removing clusters smaller than %d voxels (%gmm^3)', [smallestClusterVox, smallestClusterVox*hdr.pixdim[1]*hdr.pixdim[2]*hdr.pixdim[3] ]));
 	result := Clusterize(img32, hdr.dim[1], hdr.dim[2], hdr.dim[3], clusterNumber, clusterImg, clusterType,  smallestClusterVox);
 	if result then
 		result := (clusterNumber > 0);

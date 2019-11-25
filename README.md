@@ -151,7 +151,8 @@ Depth3D -t 3 -m 5 -r s -s b ./test/motor.nii.gz
 ## Limitations
 
  - This software is provided as is. It uses the BSD license.
- - Similar to erosion methods, this algorithm assumes that the spatial resolution is identical in each dimension. Anisotropic data must either be resliced to an isotropic grid or a different method must be used.
+ - Similar to erosion methods, this algorithm assumes that the spatial resolution is identical in each dimension. Anisotropic data must either be resliced to an isotropic grid or a different method must be used. This software uses the former approach, automatically up-sampling anisotropic images to be isotropic prior to thickness estimation, and subsequently downsampling the results to the original resolution.
+ - Similar to erosion methods, this algorithm assumes images are binary, which is not the case for probability maps. The `Up Sampling` example described previously attenuates but does not eliminate this limitation.
  
 ## Compiling
 

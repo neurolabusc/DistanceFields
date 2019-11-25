@@ -9,10 +9,10 @@ interface
 
 uses
 {$IFDEF MYTHREADS}mtprocs,mtpcpu,{$ENDIF}
-  Classes, SysUtils, nifti_types, SimdUtils;
+  Classes, SysUtils, nifti_types, SimdUtils, VectorMath;
 
 function ShrinkOrEnlarge(var lHdr: TNIFTIhdr; var lBuffer: TUInt8s; lScale: single; MaxThreads: PtrInt = 0): boolean; overload;
-
+function ShrinkOrEnlarge(var lHdr: TNIFTIhdr; var lBuffer: TUInt8s; var lScale: TVec3; MaxThreads: PtrInt = 0): boolean; overload;//
 
 implementation
 
@@ -341,6 +341,35 @@ begin
   Resize32(lHdr, TUInt8s(lBuffer), lScale, lScale, lScale, fwidth, @filter, MaxThreads);
   result := true;
 end;
+
+function ShrinkOrEnlarge(var lHdr: TNIFTIhdr; var lBuffer: TUInt8s; var lScale: TVec3; MaxThreads: PtrInt = 0): boolean; overload;//
+var
+   fwidth, mx, mn: single;
+   filter : TFilterProc;
+begin
+  result := false;
+  if lHdr.datatype <> kDT_FLOAT then exit;
+  if (lScale.x = lScale.y) and (lScale.y = lScale.z) then begin
+	mn := min(abs(lHdr.pixdim[1]), min(abs(lHdr.pixdim[2]), abs(lHdr.pixdim[3])));
+	mx := max(abs(lHdr.pixdim[1]), max(abs(lHdr.pixdim[2]), abs(lHdr.pixdim[3])));
+	if (mn <> 0) and ((mx/mn) > 1.02) then begin
+		lScale.x := lScale.x* (lHdr.pixdim[1]/mn);
+		lScale.y := lScale.y* (lHdr.pixdim[2]/mn);
+		lScale.z := lScale.z* (lHdr.pixdim[3]/mn);
+		{$ifdef unix} //windows GUI can not write to console
+		//writeln(format('Anisotropic image resliced %gx%gx%g', [lScale.x, lScale.y, lScale.z]));
+		{$endif}
+	end;
+  end;
+  if (lScale.x = 1.0) and (lScale.y = 1.0) and (lScale.z = 1.0) then exit; //no resize
+  if (lHdr.dim[4] > 1) then exit; //not for 4D
+  filter := @MitchellFilter;
+  fwidth := 2;
+  Resize32(lHdr, TUInt8s(lBuffer), lScale.x, lScale.y, lScale.z, fwidth, @filter, MaxThreads);
+  result := true;
+end;
+
+
 
 end.
 

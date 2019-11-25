@@ -8,7 +8,7 @@ uses
 	{$ifdef unix}
 	cthreads, cmem, // the c memory manager is on some systems much faster for multi-threading
 	{$endif}
-	SimdUtils,
+	SimdUtils, VectorMath,
 	distance_field,  dateutils, StrUtils, sysutils, Classes, nifti_types, 
 	nifti_loadsave, nifti_foreign, resize, math;
 
@@ -23,6 +23,17 @@ const
     kSave_Intensity = 1;
     kSave_Both = 2;
     kSave_None = 3;
+    
+function isIsotropic(var hdr: TNIFTIhdr): boolean;
+var
+	mn, mx: single;
+begin
+	mn := min(abs(hdr.pixdim[1]), min(abs(hdr.pixdim[2]), abs(hdr.pixdim[3])));
+	mx := max(abs(hdr.pixdim[1]), max(abs(hdr.pixdim[2]), abs(hdr.pixdim[3])));
+	if (mn = 0) or ((mx/mn) > 1.02) then
+		exit(false);
+	exit(true);
+end;
 
 function distanceFieldAll(fnm, outName: string; isGz, is3D: boolean; isImg, isTxt: integer; threshold: single = 0.5; maxthreads: integer = 0; superSample: integer = 1; clusterType: integer = 26; smallestClusterVox: integer = 1): boolean;
 var
@@ -30,9 +41,11 @@ var
 	img, intensityImg: TUInt8s;
 	isInputNIfTI: boolean;
 	txtNam, ext: string;
+	superSampleXYZ: TVec3;
 begin
 	result := false;
 	intensityImg := nil;
+	superSampleXYZ := Vec3(superSample, superSample, superSample);
 	if (threshold = 0) and ((isImg = kSave_Intensity) or (isImg = kSave_Both)) then begin
 		writeln('Saving intensity maps is not designed for atlases (where threshold = 0).');
 		exit;
@@ -62,9 +75,12 @@ begin
 	//if clusterType > 0 then begin
 	//	if not makeClusters(hdr, img, threshold, clusterType, smallestClusterMM3) then exit;	
 	//end;
-	if (superSample > 1) then begin
+	if (superSample > 1) or (not isIsotropic(hdr)) then begin
 		if (threshold = 0) or (hdr.dim[4] > 1) then begin 
-			writeln('Error: super sampling not supported for atlases or 4D images.');
+			if superSample <= 1 then
+				writeln('Error: atlases and 4D images must be isotropic.')
+			else
+				writeln('Error: super sampling not supported for atlases or 4D images.');
 			exit;
 		end;
 		if (isTxt <> kText_No) then
@@ -72,14 +88,15 @@ begin
 		if (smallestClusterVox > 1) then
 			writeln('Be aware that minimum cluster extent based on up-sampled voxels');
 		changeDataType(hdr, img, kDT_FLOAT32);
-		result := ShrinkOrEnlarge(hdr, img, superSample, maxthreads);
+		result := ShrinkOrEnlarge(hdr, img, superSampleXYZ, maxthreads);
 		if not result then begin
 			writeln('Supersampling error');
 			exit;
 		end;
-		writeln(format('Depth estimated on x%d supersampling (%d*%d*%d).',[superSample, hdr.dim[1], hdr.dim[2], hdr.dim[3] ]));
+		writeln(format('Depth estimated on %g*%g*%g supersampling (%d*%d*%d voxels).',[superSampleXYZ.X, superSampleXYZ.Y, superSampleXYZ.Z, hdr.dim[1], hdr.dim[2], hdr.dim[3] ]));
 		result := distanceFieldVolume(hdr, img, intensityImg, txtNam, threshold, maxthreads, clusterType, smallestClusterVox);
-		ShrinkOrEnlarge(hdr, img, 1.0/superSample, maxthreads);
+		superSampleXYZ := 1.0 / superSampleXYZ;
+		ShrinkOrEnlarge(hdr, img, superSampleXYZ, maxthreads);
 	end else if (threshold = 0) then begin
 		if (smallestClusterVox > 1) then
 			writeln('Warning: minimum cluster size not used for atlases');
