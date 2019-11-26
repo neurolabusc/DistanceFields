@@ -12,8 +12,8 @@ uses
 	SysUtils, Classes, nifti_types, nifti_loadsave, nifti_foreign;
   
 
-function distanceFieldAtlas(var hdr: TNIFTIhdr; var img: TUInt8s; txtnam: string = ''; MaxThreads: PtrInt = 0): boolean;
-function distanceFieldVolume(var hdr: TNIFTIhdr; var img: TUInt8s; out imgIntensityThresholded: TUInt8s; txtnam: string = ''; threshold: single = 0.5; MaxThreads: PtrInt = 0; clusterType: integer = 26; smallestClusterVox: integer = 1): boolean;
+function distanceFieldAtlas(var hdr: TNIFTIhdr; var img: TUInt8s; txtnam: string = ''; MaxThreads: PtrInt = 0;  msknam: string = ''): boolean;
+function distanceFieldVolume(var hdr: TNIFTIhdr; var img: TUInt8s; out imgIntensityThresholded: TUInt8s;  txtnam: string = '';  threshold: single = 0.5; MaxThreads: PtrInt = 0; clusterType: integer = 26; smallestClusterVox: integer = 1;  msknam: string = ''): boolean;
 
 implementation
 
@@ -44,7 +44,7 @@ BEGIN
       RESULT := false;
 END;
 
-procedure edt(var f: FloatRAp; var d,z: TFloat32s; var v: TInt32s; n: integer);
+procedure edt(var f: FloatRAp; var d,z: TFloat32s; var v: TInt32s; n: integer); inline;
 function vx(p, q: integer): TScalar; inline;
 begin
 	if specialsingle(f[q]) or specialsingle(f[p])   then
@@ -164,6 +164,55 @@ begin
 	result := true;
 end;
 
+
+{$DEFINE EDT1}
+{$IFDEF EDT1} //only use with USEBOUNDS
+procedure edt1(var df: FloatRAp; n: integer); inline;
+
+var
+	q, prevX : integer;
+	prevY, v : single;
+begin
+	prevX := 0;
+	prevY := infinity;
+	//forward
+	for q := 0 to (n-1) do begin
+		if (df[q] = 0) then begin 
+			prevX := q;
+			prevY := 0;
+		end else
+			df[q] := sqr(q-prevX)+prevY;
+	end;
+	//reverse
+	prevX := n;
+	prevY := infinity;
+	for q := (n-1) downto 0 do begin
+		v := sqr(q-prevX)+prevY;
+		if (df[q] < v) then begin 
+        	prevX := q;
+        	prevY := df[q];
+    	end else        
+        	df[q] := v;
+    end 
+end;
+
+procedure distanceFieldLR(var hdr: TNIFTIhdr; var img: TFloat32s; bounds: TClusterBound);
+//filter data in the X dimension (Left/Right)
+var
+	si, colStart, colLen, s, r: integer;
+	f: FloatRAp;
+begin
+	colStart := bounds.lo.x;
+	colLen := bounds.hi.x - bounds.lo.x + 1;
+	for s := bounds.lo.z to bounds.hi.z do begin
+		si := (s * hdr.dim[2]); //rows per slice
+		for r := bounds.lo.y to bounds.hi.y do begin
+			f := @img[((r+si)*hdr.dim[1])+colStart];
+			edt1(f, colLen);	
+		end; //rows, y, dim2
+	end; //slices, z, dim3
+end;
+{$ELSE}
 procedure distanceFieldLR(var hdr: TNIFTIhdr; var img: TFloat32s; bounds: TClusterBound);
 //filter data in the X dimension (Left/Right)
 var
@@ -186,9 +235,7 @@ begin
 		si := (s * hdr.dim[2]); //rows per slice
 		for r := bounds.lo.y to bounds.hi.y do begin
 			f := @img[((r+si)*cols)+colStart];
-			edt(f, d, z, v, colLen);
-			//f := @img[(r+si)*cols];
-			//edt(f, d, z, v, cols);	
+			edt(f, d, z, v, colLen);	
 		end; //rows, y, dim2
 	end; //slices, z, dim3
 	{$ELSE}
@@ -200,6 +247,7 @@ begin
 	end;
 	{$ENDIF}
 end;
+{$ENDIF}
 
 procedure distanceFieldAP(var hdr: TNIFTIhdr; var img: TFloat32s; bounds: TClusterBound);
 //filter data in the Y dimension (Anterior/Posterior)
@@ -331,6 +379,41 @@ end;
 
 {$DEFINE THREAD3D} //requires DEFINE of MYTHREADS and USEBOUNDS
 {$IFDEF THREAD3D}
+
+{$IFDEF EDT1} //only use with USEBOUNDS
+procedure distanceFieldLRThreads(var hdr: TNIFTIhdr; var img: TFloat32s; bounds: TClusterBound; MaxThreads: integer = 1);
+//filter data in the X dimension (Left/Right)
+var
+	zLo, zHi, zPerThread: integer;
+procedure SubProc(ThreadIndex: PtrInt; Data: Pointer; Item: TMultiThreadProcItem);
+var
+	zStart, zEnd, si, colStart, colLen, s, r, cols: integer;
+	f: FloatRAp;
+begin
+	zStart := zLo + (ThreadIndex * zPerThread);
+	if (zStart > zHi) then exit; //more threads than slices in Z direction
+	zEnd := zStart + zPerThread - 1; //e.g. if zStart=4 and zPerThread=1 then zEnd=4 
+	zEnd := min(zEnd, zHi); //final thread when slices in Z not evenly divisible by number of threads
+	//printf(format('LR %d..%d %d',[ThreadIndex, zStart, zEnd]));
+	cols := hdr.dim[1];
+	colStart := bounds.lo.x;
+	colLen := bounds.hi.x - bounds.lo.x + 1;
+	for s := zStart to zEnd do begin
+		si := (s * hdr.dim[2]); //rows per slice
+		for r := bounds.lo.y to bounds.hi.y do begin
+			f := @img[((r+si)*cols)+colStart];
+			edt1(f, colLen);	
+		end; //rows, y, dim2
+	end; //slices, z, dim3
+end; //nested SubProc()
+begin
+	if (MaxThreads < 1) then MaxThreads := GetSystemThreadCount();
+	zLo := bounds.lo.z;
+	zHi := bounds.hi.z;
+	zPerThread := ceil((zHi-zLo+1)/MaxThreads);
+	ProcThreadPool.DoParallelNested(subproc,0,MaxThreads-1, nil, MaxThreads);
+end; //distanceFieldLRThreads()
+{$ELSE}
 procedure distanceFieldLRThreads(var hdr: TNIFTIhdr; var img: TFloat32s; bounds: TClusterBound; MaxThreads: integer = 1);
 //filter data in the X dimension (Left/Right)
 var
@@ -370,6 +453,7 @@ begin
 	zPerThread := ceil((zHi-zLo+1)/MaxThreads);
 	ProcThreadPool.DoParallelNested(subproc,0,MaxThreads-1, nil, MaxThreads);
 end; //distanceFieldLRThreads()
+{$ENDIF}
 
 procedure distanceFieldAPThreads(var hdr: TNIFTIhdr; var img: TFloat32s; bounds: TClusterBound; MaxThreads: integer = 1);
 //filter data in the Y dimension (Anterior/Posterior)
@@ -795,7 +879,120 @@ begin
 	saveClusterAsTxt(hdr, txtnam, c);
 end;
 
-function distanceFieldVolume(var hdr: TNIFTIhdr; var img: TUInt8s; out imgIntensityThresholded: TUInt8s;  txtnam: string = '';  threshold: single = 0.5; MaxThreads: PtrInt = 0; clusterType: integer = 26; smallestClusterVox: integer = 1): boolean;
+function loadMask3D(fnm: string; var hdr: TNIFTIhdr; var img: TUInt8s; isInvert: boolean = false): boolean;
+var
+	isInputNIfTI: boolean;
+	vx, i: integer;
+	img32: TFloat32s;
+	img8: TUInt8s;
+	ok : boolean;
+begin
+	result := false;
+	if not loadVolumes(fnm, hdr, img8, isInputNIfTI) then exit;
+	changeDataType(hdr, img8, kDT_FLOAT32);
+	vx := hdr.dim[1] * hdr.dim[2] * hdr.dim[3]; //only 3D *max(1, hdr.dim[4]);
+	img32 := TFloat32s(img8);
+	setlength(img, vx);
+	for i := 0 to (vx-1) do
+		img[i] := 0;
+	if isInvert then begin
+		for i := 0 to (vx-1) do
+			if (img32[i] = 0) then
+				img[i] := 1; 
+	
+	end else begin
+		for i := 0 to (vx-1) do
+			if (img32[i] <> 0) then
+				img[i] := 1; 
+	end;
+	img8 := nil; //free
+	ok := false;
+	for i := 0 to (vx-1) do
+		if img[i] <> img[0] then begin
+			ok := true;
+			break;
+		end;
+	if not ok then begin
+		printf('Poor mask: all voxels either zero or all non-zero: '+fnm);
+		exit;
+	end;
+	result := true;
+end;
+
+function loadMask(fnm: string; var srchdr: TNIFTIhdr; var img8: TUInt8s): boolean;
+//load mask as 8-bit image, ensure that this mask matches dimensions and orientation of srchdr
+var
+	mskhdr: TNIFTIhdr;
+	i : integer;
+	isInvert: boolean = false;
+label
+	123;
+begin
+	img8 := nil;
+	if fnm = '' then exit(true);
+	if fnm[1] = '*' then begin 
+		fnm := copy(fnm, 2, maxint); //remove '*'
+		isInvert := true;
+	end;
+	if not fileexists(fnm) then begin 
+		printf('Unable to find mask image "'+fnm+'"');
+		exit(false);
+	end;
+	if not loadMask3D(fnm, mskhdr, img8, isInvert) then exit(false);
+	if (srchdr.dim[1] <> mskhdr.dim[1]) or (srchdr.dim[2] <> mskhdr.dim[2]) or (srchdr.dim[3] <> mskhdr.dim[3]) then
+		goto 123;
+	for i := 0 to 3 do begin
+		if abs(srchdr.srow_x[i] - mskhdr.srow_x[i]) > 0.01 then goto 123;	
+		if abs(srchdr.srow_y[i] - mskhdr.srow_y[i]) > 0.01 then goto 123;	
+		if abs(srchdr.srow_z[i] - mskhdr.srow_z[i]) > 0.01 then goto 123;	
+	end;
+	exit(true);
+	123:
+	img8 := nil;
+	printf('Mask and image have different dimensions or rotations (check with fslhd)');
+	exit(false);
+end;
+
+function applyMask(fnm: string; var srchdr: TNIFTIhdr; var srcimg: TFloat32s): boolean; overload;
+var
+	maskImg: TUInt8s;
+	i,j, k, vx, vol: int64;	
+begin
+	if fnm = '' then exit(true);
+	if not loadMask(fnm, srchdr, maskImg) then
+		exit(false);
+	if maskImg = nil then exit(false);
+	vol := max(1, srchdr.dim[4]);
+	vx :=  srchdr.dim[1] *  srchdr.dim[2] *  srchdr.dim[3];
+	for j := 0 to (vol-1) do begin
+		k := j * vx;
+		for i := 0 to (vx-1) do
+			if maskImg[i] = 0 then
+				srcimg[i+k] := 0;		
+	end; //for vol
+	result := true;
+end; //apply mask
+
+function applyMask(fnm: string; var srchdr: TNIFTIhdr; var srcimg: TInt32s): boolean; overload;
+var
+	maskImg: TUInt8s;
+	i,j, k, vx, vol: int64;	
+begin
+	if fnm = '' then exit(true);
+	if not loadMask(fnm, srchdr, maskImg) then exit(false);
+	if maskImg = nil then exit(false);
+	vol := max(1, srchdr.dim[4]);
+	vx :=  srchdr.dim[1] *  srchdr.dim[2] *  srchdr.dim[3];
+	for j := 0 to (vol-1) do begin
+		k := j * vx;
+		for i := 0 to (vx-1) do 
+			if maskImg[i] = 0 then
+				srcimg[i+k] := 0;
+	end; //for vol
+	result := true;
+end; //apply mask
+
+function distanceFieldVolume(var hdr: TNIFTIhdr; var img: TUInt8s; out imgIntensityThresholded: TUInt8s;  txtnam: string = '';  threshold: single = 0.5; MaxThreads: PtrInt = 0; clusterType: integer = 26; smallestClusterVox: integer = 1;  msknam: string = ''): boolean;
 //process a 3D scalar volume
 var
 	i, j, o, vx, nvol: int64;
@@ -812,6 +1009,7 @@ begin
 	if not removeSmallClusters(hdr,img, threshold, clusterType, smallestClusterVox) then
 		exit;
 	img32 := TFloat32s(img);
+	if not applyMask(msknam, hdr,img32) then exit;
 	nvol := max(1, hdr.dim[4]);
 	img32v3D := nil;
 	vx := hdr.dim[1] * hdr.dim[2] * hdr.dim[3]*nvol;
@@ -877,7 +1075,7 @@ end;
 // 13.3s +THREADCAPABLE-MYTHREADS runs single-threaded
 // 12.5s -THREADCAPABLE-MYTHREADS optimized for single threaded 
 
-function distanceFieldAtlas(var hdr: TNIFTIhdr; var img: TUInt8s;  txtnam: string = '';  MaxThreads: PtrInt = 0): boolean;
+function distanceFieldAtlas(var hdr: TNIFTIhdr; var img: TUInt8s;  txtnam: string = '';  MaxThreads: PtrInt = 0;  msknam: string = ''): boolean;
 //process a 3D indexed integer volume
 var
 	i, roi, vx, mn, mx: integer;
@@ -935,6 +1133,7 @@ begin
 	
 	if vx < 1 then exit;
 	imgIdx := copy(TInt32s(img), 0, vx);
+	if not applyMask(msknam, hdr,imgIdx) then exit;
 	mn := imgIdx[0];
 	mx := mn;
 	for i := 0 to (vx-1) do begin

@@ -23,6 +23,8 @@ const
     kSave_Intensity = 1;
     kSave_Both = 2;
     kSave_None = 3;
+    kVers = 'v1.0.20191126';
+    
     
 function isIsotropic(var hdr: TNIFTIhdr): boolean;
 var
@@ -35,7 +37,7 @@ begin
 	exit(true);
 end;
 
-function distanceFieldAll(fnm, outName: string; isGz, is3D: boolean; isImg, isTxt: integer; threshold: single = 0.5; maxthreads: integer = 0; superSample: integer = 1; clusterType: integer = 26; smallestClusterVox: integer = 1): boolean;
+function distanceFieldAll(fnm, outName: string; isGz, is3D: boolean; isImg, isTxt: integer; threshold: single = 0.5; maxthreads: integer = 0; superSample: integer = 1; clusterType: integer = 26; smallestClusterVox: integer = 1; maskName: string = ''): boolean;
 var
 	hdr: TNIFTIhdr;
 	img, intensityImg: TUInt8s;
@@ -75,6 +77,7 @@ begin
 	//if clusterType > 0 then begin
 	//	if not makeClusters(hdr, img, threshold, clusterType, smallestClusterMM3) then exit;	
 	//end;
+	
 	if (superSample > 1) or (not isIsotropic(hdr)) then begin
 		if (threshold = 0) or (hdr.dim[4] > 1) then begin 
 			if superSample <= 1 then
@@ -94,17 +97,18 @@ begin
 			exit;
 		end;
 		writeln(format('Depth estimated on %g*%g*%g supersampling (%d*%d*%d voxels).',[superSampleXYZ.X, superSampleXYZ.Y, superSampleXYZ.Z, hdr.dim[1], hdr.dim[2], hdr.dim[3] ]));
-		result := distanceFieldVolume(hdr, img, intensityImg, txtNam, threshold, maxthreads, clusterType, smallestClusterVox);
+		result := distanceFieldVolume(hdr, img, intensityImg, txtNam, threshold, maxthreads, clusterType, smallestClusterVox, maskName);
 		superSampleXYZ := 1.0 / superSampleXYZ;
 		ShrinkOrEnlarge(hdr, img, superSampleXYZ, maxthreads);
 	end else if (threshold = 0) then begin
 		if (smallestClusterVox > 1) then
 			writeln('Warning: minimum cluster size not used for atlases');
-		result := distanceFieldAtlas(hdr, img, txtNam, maxthreads)
+		result := distanceFieldAtlas(hdr, img, txtNam, maxthreads, maskName)
 	end else
-		result := distanceFieldVolume(hdr, img, intensityImg, txtNam, threshold, maxthreads, clusterType, smallestClusterVox);
+		result := distanceFieldVolume(hdr, img, intensityImg, txtNam, threshold, maxthreads, clusterType, smallestClusterVox, maskName);
 	if not result then exit;
 	if (isImg = kSave_None) then exit;
+	hdr.descrip := 'Depth3D '+kVers;
 	if (isImg = kSave_Depth) or (isImg = kSave_Both) then 
 		result := saveNii(outName, hdr, img, isGz, is3D);
 	if not result then  exit;
@@ -116,8 +120,7 @@ begin
 	if (isImg = kSave_Intensity) then 
 		result := saveNii(outName, hdr, intensityImg, isGz, is3D);
 	if (isImg = kSave_Both) then
-		result := saveNii(outName+'_intensity', hdr, intensityImg, isGz, is3D);
-	
+		result := saveNii(outName+'_intensity', hdr, intensityImg, isGz, is3D);	
 end;
 
 procedure showhelp;
@@ -128,13 +131,15 @@ begin
     {$IFDEF WINDOWS}
     exeName := ChangeFileExt(exeName, ''); //i2nii.exe -> i2nii
     {$ENDIF}
-    writeln('Chris Rorden''s '+exeName+' v1.0.20191123');
+    writeln('Chris Rorden''s '+exeName+' '+kVers);
     writeln(format('usage: %s [options] <in_file(s)>', [exeName]));
 	writeln('Reads volume and computes distance fields');
 	writeln('OPTIONS');
     writeln(' -3 : save 4D data as 3D files (y/n, default n)');
     writeln(' -c : connectivity neighbors (6=faces, 18=edges, 26=corners, default 26)');
     writeln(' -h : show help');
+    writeln(' -i : inverted mask image (ignore voxels with value of non-zero in mask)');
+    writeln(' -k : mask image (ignore voxels with value of zero in mask)');
     writeln(' -o : output name (omit to save as input name with "depth_" prefix)');
     writeln(' -r : report table (y/n/s: yes, no, screen, default n)');
     writeln(' -t : threshold, less extreme values treated as outside (default 0.5)');
@@ -158,6 +163,7 @@ begin
     writeln(format('  %s -t 0.5 %sisotropic.nii.gz', [exeName, InDir]));
     writeln(format('  %s -t 0.25 -u 3 %savg152T1_gray.nii.gz', [exeName, InDir]));
     writeln(format('  %s -t 3 -m 5 -r s -s n %smotor.nii.gz', [exeName, InDir]));
+    writeln(format('  %s -k %sisotropic_mask.nii.gz %sisotropic.nii.gz', [exeName, InDir, InDir]));
     writeln(format('  %s -o "%sOutputImg" -t 0.5 "%sname with spaces"', [exeName, OutDir, InDir]));
 end;
 
@@ -176,6 +182,7 @@ var
     threshold: single = 0.5; 
     superSample: integer = 1;
     outName: string = '';
+    maskName: string = '';
     s, v: string;
     c: char;
 begin
@@ -190,7 +197,7 @@ begin
         if length(s) < 1 then continue; //possible?
         if s[1] <> '-' then begin
             nAttempt := nAttempt + 1;
-            if distanceFieldAll(s, outName, isGz, is3D, isImg, isTxt, threshold, maxthreads, superSample, clusterType, smallestClusterVox) then
+            if distanceFieldAll(s, outName, isGz, is3D, isImg, isTxt, threshold, maxthreads, superSample, clusterType, smallestClusterVox, maskName) then
                 nOK := nOK + 1;
             continue;
         end;
@@ -205,6 +212,10 @@ begin
             is3D := upcase(v[1]) = 'Y'; 
         if c =  'C' then
             clusterType := strtointdef(v, 26); 
+        if c = 'I' then
+        	maskName := '*'+v;
+        if c = 'K' then
+        	maskName := v;
         if c =  'M' then
             smallestClusterVox := strtointdef(v, 1);   
         if c =  'O' then

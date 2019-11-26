@@ -95,6 +95,16 @@ Generates the following report of centers:
 
 ![alt tag](https://github.com/neurolabusc/DistanceFields/blob/master/atlas.jpg)
 
+### Masking
+
+We can apply a mask to exclude voxels. The top panel in the image below shows an isotropic sphere (white) with a red bar-bell shaped mask (shown in red). Use `-k` to mask regions with zero value in the mask from our object. Use `-i` to apply an inverted mask. The mask is expected to be a 3D volume with identical shape and orientation with the primary image. 
+
+```
+Depth3D -i ./test/isotropic_mask.nii.gz ./test/isotropic.nii.gz
+```
+
+![alt tag](https://github.com/neurolabusc/DistanceFields/blob/master/mask.png)
+
 ### Up Sampling
 
 This method assumes an image is binary: a voxel is either inside or outside the region. In reality, some voxels at the boundary of a region will be a mixture of the region and non-region. This is the partial volume problem: tissue is not constrained to respect the borders of our voxels. A nice example of this is tissue probability maps, where a voxel that is 75% gray matter and 25% other tissue (white matter, CSF) might have an intensity of 0.25. If we analyze this data at its original resolution, the results may be a bit blocky. One solution is to up-sample the data to a higher resolution, apply our threshold, compute thickness and downsample the resulting data. In theory, this method can capture some of boundary of the object a bit better. Thick3D provides the `-u` option that allows you to select a up-sampling factor. The image will be up-sampled and subsequently downsampled using a [antialiasing Mitchell filter](https://www.sciencedirect.com/science/article/pii/B9780080507552500129). Both the upsampling and the inherent smoothing of this filter can make the resulting values a bit less discrete. The images below were created with these two commands that compute thickness without super sampling (left) and with x4 supersampling (right).
@@ -152,7 +162,7 @@ Depth3D -t 3 -m 5 -r s -s b ./test/motor.nii.gz
 
  - This software is provided as is. It uses the BSD license.
  - Similar to erosion methods, this algorithm assumes that the spatial resolution is identical in each dimension. Anisotropic data must either be resliced to an isotropic grid or a different method must be used. This software uses the former approach, automatically up-sampling anisotropic images to be isotropic prior to thickness estimation, and subsequently downsampling the results to the original resolution.
- - Similar to erosion methods, this algorithm assumes images are binary, which is not the case for probability maps. The `Up Sampling` example described previously attenuates but does not eliminate this limitation.
+ - Similar to erosion methods, this traditional implementations of this algorithm assumes images are binary, which is not the case for probability maps. The `Up Sampling` example described previously attenuates but does not eliminate this limitation. [William Silversmith](https://github.com/seung-lab/euclidean-distance-transform-3d) provides an alternative approach for dealing with anisotropy.
  
 ## Compiling
 
@@ -163,12 +173,12 @@ Most people will want to download a [pre-compiled executable](https://github.com
 
 ```
 fpc Depth3D
-./Depth3D ./test/AICHA.nii.gz
+./Depth3D -t 0 ./test/AICHA.nii.gz
 ```
 
 ## Performance
 
-This is a very fast algorithm. However, atlas images are necessarily complex, as depth is computed for each region independently. This tool uses two tricks that accelerate these cases. First, depth is only computed for a box constrained by the size of the region being computed, rather than for the entire volume. This is useful for atlases with many regions, where each region typically is only a small portion of the overall 3D volume. In general, this trick makes the algorithm about 5 times faster. Further, this algorithm can leverage parallel processing. The included sample [AICHA](http://www.gin.cnrs.fr/en/tools/aicha/) atlas has 384 regions. It requires 1.65 seconds to process in single threaded mode and 0.45 seconds for threaded conversion on a 4-core (8-thread) laptop.
+This is a very fast algorithm. However, atlas images are necessarily complex, as depth is computed for each region independently. This tool uses several tricks that accelerate these cases. First, we can use a simple forward and back sweep for the [first transformation](https://github.com/seung-lab/euclidean-distance-transform-3d). Second, depth is only computed for a box constrained by the size of the region being computed, rather than for the entire volume. This is useful for atlases with many regions, where each region typically is only a small portion of the overall 3D volume. In general, this trick makes the algorithm about 5 times faster. Finally, this algorithm can leverage parallel processing. The included sample [AICHA](http://www.gin.cnrs.fr/en/tools/aicha/) atlas has 384 regions (91*109*91 voxels). It requires 1.7 seconds to process in single threaded mode and 0.43 seconds for threaded conversion on a 4-core (8-thread) laptop. 
 
 ## Supported Image Formats
 
@@ -199,6 +209,5 @@ If your image format is not supported, you may want to see if it is supported by
 
 ## Links
 
- - [Philip Rideout's distance fields](https://prideout.net/blog/distance_fields/) page was the inspiration for this project.
- - [Philip Rideout's snowy](https://prideout.net/snowy/) provides distance fields (and more) for 2D images with a nice Python wrapper.
-
+ - [Philip Rideout's distance fields](https://prideout.net/blog/distance_fields/) page was the inspiration for this project. His [snowy project](https://prideout.net/snowy/) provides distance fields (and more) for 2D images with a nice Python wrapper.
+ - [William Silversmith's euclidean-distance-transform-3d](https://github.com/seung-lab/euclidean-distance-transform-3d) provides optimized C code, Python wrappers, and comprehensive discussion of the origins and optimizations.
