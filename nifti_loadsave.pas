@@ -7,7 +7,6 @@ interface
 uses
   {$IFDEF BZIP2}bzip2stream,{$ENDIF}
   {$IFDEF GZIP}zstream, gziputils, {$ENDIF}
-  {$IFNDEF UNIX}system, {$ENDIF}
   VectorMath, SimdUtils, nifti_types, 
   DateUtils, Classes, SysUtils, StrUtils, Math, 
   nifti_foreign;

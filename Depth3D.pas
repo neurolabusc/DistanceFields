@@ -152,7 +152,7 @@ begin
     writeln(' Examples :');
     {$IFDEF WINDOWS}
     OutDir := 'c:\out dir\';
-    InDir := 'c:\in\';
+    InDir := '.\test\';
     {$ELSE}
     OutDir := '~/out dir/';
     InDir := './test/';

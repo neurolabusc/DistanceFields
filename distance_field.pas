@@ -7,7 +7,6 @@ unit distance_field;
 interface
 uses  
 	{$IFDEF MYTHREADS}mtprocs,mtpcpu,{$ENDIF}
-	{$IFNDEF UNIX}system, {$ENDIF}
 	dateutils, Math, VectorMath, SimdUtils, StrUtils, clusters, sortu,
 	SysUtils, Classes, nifti_types, nifti_loadsave, nifti_foreign;
   
