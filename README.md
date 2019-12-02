@@ -8,12 +8,12 @@ While Snowy is ideal for most situations, this project is specifically designed 
 
 You can get Depth3D using two methods:
 
- - (Recommended) Download latest compiled release from [Github release web page](https://github.com/rordenlab/DistanceFields/releases).
+ - (Recommended) Download latest compiled release from [Github release web page](https://github.com/neurolabusc/DistanceFields/releases).
  - (Recommended) You can also download from the command line for Linux, MacOS and Windows:
-   * `curl -fLO https://github.com/rordenlab/DistanceFields/releases/latest/download/Depth3D_lnx.zip`
-   * `curl -fLO https://github.com/rordenlab/DistanceFields/releases/latest/download/Depth3D_mac.zip`
-   * `curl -fLO https://github.com/rordenlab/DistanceFields/releases/latest/download/Depth3D_win.zip`
- - (Developers) Download the source code from [GitHub](https://github.com/rordenlab/DistanceFields).
+   * `curl -fLO https://github.com/neurolabusc/DistanceFields/releases/latest/download/Depth3D_lnx.zip`
+   * `curl -fLO https://github.com/neurolabusc/DistanceFields/releases/latest/download/Depth3D_mac.zip`
+   * `curl -fLO https://github.com/neurolabusc/DistanceFields/releases/latest/download/Depth3D_win.zip`
+ - (Developers) Download the source code from [GitHub](https://github.com/neurolabusc/DistanceFields).
 
 ## Usage
 
@@ -166,7 +166,7 @@ Depth3D -t 3 -m 5 -r s -s b ./test/motor.nii.gz
  
 ## Compiling
 
-Most people will want to download a [pre-compiled executable](https://github.com/rordenlab/DistanceFields/releases). Alternatively, [Snowy](https://github.com/prideout/snowy) provides a scriptable Python implementation. However, you can compile your own copy from source code:
+Most people will want to download a [pre-compiled executable](https://github.com/neurolabusc/DistanceFields/releases). Alternatively, [Snowy](https://github.com/prideout/snowy) provides a scriptable Python implementation. However, you can compile your own copy from source code:
 
  - Download and install [FreePascal for your operating system](https://www.freepascal.org/download.html). For Debian-based unix this may be as easy as `sudo apt-get install fp-compiler`. For other operating systems, you may simply want to install FreePascal from the latest [Lazarus distribution](https://sourceforge.net/projects/lazarus/files/).
  - From the terminal, go inside the directory with the source files and run the following commands to build and validate your compilation:
