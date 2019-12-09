@@ -86,6 +86,7 @@ function readForeignHeader (var lFilename: string; var lHdr: TNIFTIhdr; var gzBy
 procedure convertForeignToNifti(var nhdr: TNIFTIhdr);
 function FSize (lFName: String): Int64;
 function isTIFF(fnm: string): boolean;
+procedure LOAD_MAT44(out m: mat44; m00,m01,m02,m03, m10,m11,m12,m13, m20,m21,m22,m23: single);
 procedure nifti_mat44_to_quatern( lR :mat44; out qb, qc, qd, qx, qy, qz, dx, dy, dz, qfac : single);
 
 implementation
@@ -265,7 +266,7 @@ end;
        exit;
     result := true;
   end; *)
-  function FSize (lFName: String): Int64;
+function FSize (lFName: String): Int64;
 var SearchRec: TSearchRec;
 begin
   result := 0;

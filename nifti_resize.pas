@@ -1,4 +1,4 @@
-unit resize;
+unit nifti_resize;
 
 {$mode delphi}{$H+}
 {$inline on}
@@ -11,12 +11,238 @@ uses
 {$IFDEF MYTHREADS}mtprocs,mtpcpu,{$ENDIF}
   Classes, SysUtils, nifti_types, SimdUtils, VectorMath;
 
-function ShrinkOrEnlarge(var lHdr: TNIFTIhdr; var lBuffer: TUInt8s; lScale: single; MaxThreads: PtrInt = 0): boolean; overload;
-function ShrinkOrEnlarge(var lHdr: TNIFTIhdr; var lBuffer: TUInt8s; var lScale: TVec3; MaxThreads: PtrInt = 0): boolean; overload;//
+function ShrinkOrEnlarge(var lHdr: TNIFTIhdr; var lBuffer: TUInt8s; lScale: single; MaxThreads: PtrInt = 0; filterIndex: integer = 0): boolean; overload;
+function ShrinkOrEnlarge(var lHdr: TNIFTIhdr; var lBuffer: TUInt8s; var lScale: TVec3; MaxThreads: PtrInt = 0; filterIndex: integer = 0): boolean; overload;//
+function ShrinkMax(var hdr: TNIFTIhdr; var img: TUInt8s; scale: integer; maxthreads: integer = 0): boolean;
 
 implementation
 
 uses math;
+
+{$IFDEF MYTHREADS}
+function ShrinkMax(var hdr: TNIFTIhdr; var img: TUInt8s; scale: integer; maxthreads: integer = 0): boolean;
+//integer reduction, for each output voxel reports peak of all contributing input voxels
+var
+	tPerThread, tHi, inX, outX, outXY, inY, inXY, outVox: int64;
+	inImg, outImg: TFloat32s;	
+procedure SubProc(ThreadIndex: PtrInt; Data: Pointer; Item: TMultiThreadProcItem);
+var
+	tStart, tEnd, i, inSlice, outSlice, inRow, outPos, inPos: int64;	
+begin
+	tStart := (ThreadIndex * tPerThread);
+	if (tStart > tHi) then exit; //more threads than slices in Z direction
+	tEnd := tStart + tPerThread - 1; //e.g. if zStart=4 and zPerThread=1 then zEnd=4 
+	tEnd := min(tEnd, tHi); //final thread when slices in Z not evenly divisible by number of threads
+	for inSlice := tStart to tEnd do begin
+		outSlice := (inSlice div scale) * outXY;
+		for inRow := 0 to (inY-1) do begin
+			inPos := (inSlice * inXY) + (inRow * inX);
+			outPos := outSlice + (inRow div scale) * outX;
+			for i := 1 to (inX) do begin
+				outImg[outPos] := max(inImg[inPos], outImg[outPos]);
+				inPos += 1;
+				if (i mod scale) = 0 then
+					outPos += 1;
+			end;
+		end;
+	end;
+end; //nested SubProc()	
+var
+	outImg8: TUInt8s;
+	i: int64;
+begin
+	result := false;
+	if (scale < 2) then exit;
+	if ((hdr.dim[1] mod scale) <> 0) then exit;
+	if ((hdr.dim[2] mod scale) <> 0) then exit;
+	if ((hdr.dim[3] mod scale) <> 0) then exit;
+	if (MaxThreads < 1) then MaxThreads :=  GetSystemThreadCount();
+	tHi := (hdr.dim[3]*max(hdr.dim[4], 1)) -1;
+	tPerThread := ceil((tHi+1)/MaxThreads);
+	inX := hdr.dim[1];
+	inY := hdr.dim[2];
+	inXY := inX * inY;
+	//inZT := 
+	//inVox := inX * inYZT;
+	hdr.dim[1] := hdr.dim[1] div scale;
+	hdr.dim[2] := hdr.dim[2] div scale;
+	hdr.dim[3] := hdr.dim[3] div scale;
+	hdr.pixdim[1] := hdr.pixdim[1] * scale;
+	hdr.pixdim[2] := hdr.pixdim[2] * scale;
+	hdr.pixdim[3] := hdr.pixdim[3] * scale;
+	outX := hdr.dim[1];
+	outXY := outX * hdr.dim[2];
+	outVox := hdr.dim[1] * hdr.dim[2] * hdr.dim[3]*max(hdr.dim[4], 1);
+	inImg := TFloat32s(img);
+	setlength(outImg8, outVox * sizeof(single));
+	outImg := TFloat32s(outImg8);
+	for i := 0 to (outVox-1) do
+		outImg[i] := -infinity;
+	ProcThreadPool.DoParallelNested(SubProc,0,MaxThreads-1, nil, MaxThreads);
+	img := nil; //free input image
+	img := outImg8; //return output image
+	for i := 0 to 2 do begin
+		hdr.srow_x[i] := hdr.srow_x[i] * scale;
+		hdr.srow_y[i] := hdr.srow_y[i] * scale;
+		hdr.srow_z[i] := hdr.srow_z[i] * scale;
+		
+	end;
+	hdr.qform_code := kNIFTI_XFORM_UNKNOWN;
+	result := true;
+end;
+{$ELSE}
+function ShrinkMaxk(var hdr: TNIFTIhdr; var img: TUInt8s; scale: integer; maxthreads: integer = 0): boolean;
+//integer reduction, for each output voxel reports peak of all contributing input voxels
+var
+	i, inX, outX, outXY, outSlice, inRow, inSlice, inPos, outPos, inY, inZT, inXY, outVox: int64;
+	outImg8: TUInt8s;
+	inImg, outImg: TFloat32s;
+begin
+	result := false;
+	if (scale < 2) then exit;
+	if ((hdr.dim[1] mod scale) <> 0) then exit;
+	if ((hdr.dim[2] mod scale) <> 0) then exit;
+	if ((hdr.dim[3] mod scale) <> 0) then exit;
+	inX := hdr.dim[1];
+	inY := hdr.dim[2];
+	inXY := inX * inY;
+	inZT := hdr.dim[3]*max(hdr.dim[4], 1);
+	//inVox := inX * inYZT;
+	hdr.dim[1] := hdr.dim[1] div scale;
+	hdr.dim[2] := hdr.dim[2] div scale;
+	hdr.dim[3] := hdr.dim[3] div scale;
+	hdr.pixdim[1] := hdr.pixdim[1] * scale;
+	hdr.pixdim[2] := hdr.pixdim[2] * scale;
+	hdr.pixdim[3] := hdr.pixdim[3] * scale;
+	outX := hdr.dim[1];
+	outXY := outX * hdr.dim[2];
+	outVox := hdr.dim[1] * hdr.dim[2] * hdr.dim[3]*max(hdr.dim[4], 1);
+	inImg := TFloat32s(img);
+	setlength(outImg8, outVox * sizeof(single));
+	outImg := TFloat32s(outImg8);
+	for i := 0 to (outVox-1) do
+		outImg[i] := -infinity;
+	for inSlice := 0 to (inZT - 1) do begin
+		outSlice := (inSlice div scale) * outXY;
+		for inRow := 0 to (inY-1) do begin
+			inPos := (inSlice * inXY) + (inRow * inX);
+			outPos := outSlice + (inRow div scale) * outX;
+			for i := 1 to (inX) do begin
+				outImg[outPos] := max(inImg[inPos], outImg[outPos]);
+				inPos += 1;
+				if (i mod scale) = 0 then
+					outPos += 1;
+			end;
+		end;
+	end;
+	img := nil; //free input image
+	img := outImg8; //return output image
+	result := true;
+end;
+{$ENDIF}
+
+// Extends image shrink code by Anders Melander, anders@melander.dk
+// Here's some additional copyrights for you:
+//
+// The algorithms and methods used in this library are based on the article
+// "General Filtered Image Rescaling" by Dale Schumacher which appeared in the
+// book Graphics Gems III, published by Academic Press, Inc.
+// From filter.c:
+// The authors and the publisher hold no copyright restrictions
+// on any of these files; this source code is public domain, and
+// is freely available to the entire computer graphics community
+// for study, use, and modification.  We do request that the
+// comment at the top of each file, identifying the original
+// author and its original publication in the book Graphics
+// Gems, be retained in all programs that use these files.
+
+// Hermite filter
+
+function HermiteFilter(Value: Single): Single;
+begin
+  // f(t) = 2|t|^3 - 3|t|^2 + 1, -1 <= t <= 1
+  if (Value < 0.0) then
+    Value := -Value;
+  if (Value < 1.0) then
+    Result := (2.0 * Value - 3.0) * Sqr(Value) + 1.0
+  else
+    Result := 0.0;
+end;
+
+// Triangle filter
+// a.k.a. "Linear" or "Bilinear" filter
+
+function TriangleFilter(Value: Single): Single;
+begin
+  if (Value < 0.0) then
+    Value := -Value;
+  if (Value < 1.0) then
+    Result := 1.0 - Value
+  else
+    Result := 0.0;
+end;
+
+// Bell filter
+
+function BellFilter(Value: Single): Single;
+begin
+  if (Value < 0.0) then
+    Value := -Value;
+  if (Value < 0.5) then
+    Result := 0.75 - Sqr(Value)
+  else if (Value < 1.5) then
+  begin
+    Value := Value - 1.5;
+    Result := 0.5 * Sqr(Value);
+  end
+  else
+    Result := 0.0;
+end;
+
+// B-spline filter
+
+function SplineFilter(Value: Single): Single;
+var
+  tt: single;
+begin
+  if (Value < 0.0) then
+    Value := -Value;
+  if (Value < 1.0) then
+  begin
+    tt := Sqr(Value);
+    Result := 0.5 * tt * Value - tt + 2.0 / 3.0;
+  end
+  else if (Value < 2.0) then
+  begin
+    Value := 2.0 - Value;
+    Result := 1.0 / 6.0 * Sqr(Value) * Value;
+  end
+  else
+    Result := 0.0;
+end;
+
+// Lanczos3 filter
+
+function Lanczos3Filter(Value: Single): Single;
+function SinC(Value: Single): Single;
+  begin
+    if (Value <> 0.0) then
+    begin
+      Value := Value * Pi;
+      Result := sin(Value) / Value
+    end
+    else
+      Result := 1.0;
+  end;
+begin
+  if (Value < 0.0) then
+    Value := -Value;
+  if (Value < 3.0) then
+    Result := SinC(Value) * SinC(Value / 3.0)
+  else
+    Result := 0.0;
+end;
+
 
 function MitchellFilter(Value: Single): Single;
 const
@@ -112,7 +338,6 @@ var
    i, inDim: int64;
    scale: array[1..3] of single;
 begin
-     //showmessage(format('%g -> %g %g %g; %g %g %g; %g %g %g',[iScale, lHdr.srow_x[0],lHdr.srow_y[0],lHdr.srow_z[0], lHdr.srow_x[1],lHdr.srow_y[1],lHdr.srow_z[1], lHdr.srow_x[2],lHdr.srow_y[2],lHdr.srow_z[2]]));
      for i := 1 to 3 do begin
          if i = 1 then
                  scale[i] := xScale
@@ -134,6 +359,7 @@ begin
          lHdr.srow_y[i] := lHdr.srow_y[i]/ scale[i+1];
          lHdr.srow_z[i] := lHdr.srow_z[i]/ scale[i+1];
      end;
+     lHdr.qform_code := kNIFTI_XFORM_UNKNOWN;
 end;
 
 procedure Resize32(var lHdr: TNIFTIhdr; var lImg8: TUInt8s; xScale, yScale, zScale, fwidth: single; filter: TFilterProc; MaxThreads: PtrInt = 0);
@@ -230,7 +456,6 @@ begin
 end; //SubProcZ()  
 var 
   mx, mn: double;
-  //lineStart, 
   i: int64;
 begin
   {$IFDEF MYTHREADS}
@@ -327,7 +552,26 @@ begin
   lImg8 := finalImg;
 end; //Resize32()
 
-function ShrinkOrEnlarge(var lHdr: TNIFTIhdr; var lBuffer: TUInt8s; lScale: single; MaxThreads: PtrInt = 0): boolean; overload;
+function SetFilter(filterIndex: integer; out filter: TFilterProc): single;
+begin
+	//Lanczos nice for downsampling
+	//Mitchell nice for upsampling
+	if filterIndex = 1 then begin
+	  filter := @TriangleFilter; result := 1;
+	end else if filterIndex = 2 then begin
+	  filter := @HermiteFilter; result := 1;
+	end else if filterIndex = 3 then begin
+	 filter := @BellFilter; result := 1.5;
+	end else if filterIndex = 4 then begin
+	 filter := @SplineFilter; result := 2;
+	end else if filterIndex = 5 then begin
+	 filter := @Lanczos3Filter; result := 3;
+	end else begin
+	 filter := @MitchellFilter; result := 2;
+	end;
+end;
+
+function ShrinkOrEnlarge(var lHdr: TNIFTIhdr; var lBuffer: TUInt8s; lScale: single; MaxThreads: PtrInt = 0; filterIndex: integer = 0): boolean; overload;
 var
    fwidth: single;
    filter : TFilterProc;
@@ -336,13 +580,12 @@ begin
   if lHdr.datatype <> kDT_FLOAT then exit;
   if (lScale = 1.0) then exit; //no resize
   if (lHdr.dim[4] > 1) then exit; //not for 4D
-  filter := @MitchellFilter;
-  fwidth := 2;
-  Resize32(lHdr, TUInt8s(lBuffer), lScale, lScale, lScale, fwidth, @filter, MaxThreads);
+  fwidth := SetFilter(filterIndex, filter);
+  Resize32(lHdr, lBuffer, lScale, lScale, lScale, fwidth, @filter, MaxThreads);
   result := true;
 end;
 
-function ShrinkOrEnlarge(var lHdr: TNIFTIhdr; var lBuffer: TUInt8s; var lScale: TVec3; MaxThreads: PtrInt = 0): boolean; overload;//
+function ShrinkOrEnlarge(var lHdr: TNIFTIhdr; var lBuffer: TUInt8s; var lScale: TVec3; MaxThreads: PtrInt = 0; filterIndex: integer = 0): boolean; overload;//
 var
    fwidth, mx, mn: single;
    filter : TFilterProc;
@@ -363,13 +606,10 @@ begin
   end;
   if (lScale.x = 1.0) and (lScale.y = 1.0) and (lScale.z = 1.0) then exit; //no resize
   if (lHdr.dim[4] > 1) then exit; //not for 4D
-  filter := @MitchellFilter;
-  fwidth := 2;
-  Resize32(lHdr, TUInt8s(lBuffer), lScale.x, lScale.y, lScale.z, fwidth, @filter, MaxThreads);
+  fwidth := SetFilter(filterIndex, filter);
+  Resize32(lHdr, lBuffer, lScale.x, lScale.y, lScale.z, fwidth, @filter, MaxThreads);
   result := true;
 end;
-
-
 
 end.
 

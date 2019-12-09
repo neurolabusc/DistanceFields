@@ -1,24 +1,28 @@
 unit nifti_loadsave;
 //written by William ('Bill') G. Miller 2004, released under BSD 2-Clause License
 interface
-{$mode Delphi}
+{$mode Delphi}{$H+}
 {$DEFINE GZIP}
-{$DEFINE BZIP2}
+{$DEFINE LOADFOREIGN}
+{$IFDEF LOADFOREIGN}{$DEFINE BZIP2}{$ENDIF}//BZ2 used by foreign AFN BRIK images
 uses
+  {$IFDEF LOADFOREIGN}nifti_foreign, {$ENDIF}
+  {$IFDEF UNIX}BaseUnix, Unix, process,  {$ENDIF}
   {$IFDEF BZIP2}bzip2stream,{$ENDIF}
   {$IFDEF GZIP}zstream, gziputils, {$ENDIF}
-  VectorMath, SimdUtils, nifti_types, 
-  DateUtils, Classes, SysUtils, StrUtils, Math, 
-  nifti_foreign;
+  VectorMath, SimdUtils, nifti_types,
+  DateUtils, Classes, SysUtils, StrUtils, Math;
   
 const
     kDT_input = 0; //save data output as same datatype as input
 
-function saveNii(fnm: string; var lHdr: TNIFTIhdr; var rawData: TUInt8s; isGz, is3D: boolean): boolean; overload;
-function saveNii(fnm: string; var oHdr: TNIFTIhdr; var orawVolBytes: TUInt8s; isGz: boolean): boolean; overload;
+function saveNii(fnm: string; var lHdr: TNIFTIhdr; var rawData: TUInt8s; isGz, is3D: boolean; maxthreads: integer = 0): boolean; overload;
+function saveNii(fnm: string; var oHdr: TNIFTIhdr; var orawVolBytes: TUInt8s; isGz: boolean; maxthreads: integer = 0): boolean; overload;
 function loadVolumes(var Filename: string; out lHdr: TNIFTIhdr; out rawData: TUInt8s; out isInputNIfTI: boolean): boolean;
 procedure printf(s: string);
 procedure changeDataType(var lHdr: TNIFTIhdr; var rawData: TUInt8s; outDT: integer; isVerbose: boolean = false);
+function applyMask(fnm: string; var srchdr: TNIFTIhdr; var srcimg: TFloat32s; maskVal: single = 0): boolean; overload;
+function applyMask(fnm: string; var srchdr: TNIFTIhdr; var srcimg: TInt32s): boolean; overload;
 
 implementation
 
@@ -31,6 +35,119 @@ begin
 		writeln(s);	
 	{$ENDIF}    
 end;
+
+function loadMask3D(fnm: string; var hdr: TNIFTIhdr; var img: TUInt8s; isInvert: boolean = false): boolean;
+var
+	isInputNIfTI: boolean;
+	vx, i: int64;
+	img32: TFloat32s;
+	img8: TUInt8s;
+	ok : boolean;
+begin
+	result := false;
+	if not loadVolumes(fnm, hdr, img8, isInputNIfTI) then exit;
+	changeDataType(hdr, img8, kDT_FLOAT32);
+	vx := hdr.dim[1] * hdr.dim[2] * hdr.dim[3]; //only 3D *max(1, hdr.dim[4]);
+	img32 := TFloat32s(img8);
+	setlength(img, vx);
+	for i := 0 to (vx-1) do
+		img[i] := 0;
+	if isInvert then begin
+		for i := 0 to (vx-1) do
+			if (img32[i] = 0) then
+				img[i] := 1; 
+	
+	end else begin
+		for i := 0 to (vx-1) do
+			if (img32[i] <> 0) then
+				img[i] := 1; 
+	end;
+	img8 := nil; //free
+	ok := false;
+	for i := 0 to (vx-1) do
+		if img[i] <> img[0] then begin
+			ok := true;
+			break;
+		end;
+	if not ok then begin
+		printf('Poor mask: all voxels either zero or all non-zero: '+fnm);
+		exit;
+	end;
+	result := true;
+end;
+
+function loadMask(fnm: string; var srchdr: TNIFTIhdr; var img8: TUInt8s): boolean;
+//load mask as 8-bit image, ensure that this mask matches dimensions and orientation of srchdr
+var
+	mskhdr: TNIFTIhdr;
+	i : int64;
+	isInvert: boolean = false;
+label
+	123;
+begin
+	img8 := nil;
+	if fnm = '' then exit(true);
+	if fnm[1] = '*' then begin 
+		fnm := copy(fnm, 2, maxint); //remove '*'
+		isInvert := true;
+	end;
+	if not fileexists(fnm) then begin 
+		printf('Unable to find mask image "'+fnm+'"');
+		exit(false);
+	end;
+	if not loadMask3D(fnm, mskhdr, img8, isInvert) then exit(false);
+	if (srchdr.dim[1] <> mskhdr.dim[1]) or (srchdr.dim[2] <> mskhdr.dim[2]) or (srchdr.dim[3] <> mskhdr.dim[3]) then
+		goto 123;
+	for i := 0 to 3 do begin
+		if abs(srchdr.srow_x[i] - mskhdr.srow_x[i]) > 0.01 then goto 123;	
+		if abs(srchdr.srow_y[i] - mskhdr.srow_y[i]) > 0.01 then goto 123;	
+		if abs(srchdr.srow_z[i] - mskhdr.srow_z[i]) > 0.01 then goto 123;	
+	end;
+	exit(true);
+	123:
+	img8 := nil;
+	printf('Mask and image have different dimensions or rotations (check with fslhd)');
+	exit(false);
+end;
+
+function applyMask(fnm: string; var srchdr: TNIFTIhdr; var srcimg: TFloat32s; maskVal: single = 0): boolean; overload;
+var
+	maskImg: TUInt8s;
+	i,j, k, vx, vol: int64;	
+begin
+	if fnm = '' then exit(true);
+	if not loadMask(fnm, srchdr, maskImg) then
+		exit(false);
+	if maskImg = nil then exit(false);
+	vol := max(1, srchdr.dim[4]);
+	vx :=  srchdr.dim[1] *  srchdr.dim[2] *  srchdr.dim[3];
+	for j := 0 to (vol-1) do begin
+		k := j * vx;
+		for i := 0 to (vx-1) do
+			if maskImg[i] = 0 then
+				srcimg[i+k] := maskVal;		
+	end; //for vol
+	result := true;
+end; //apply mask
+
+function applyMask(fnm: string; var srchdr: TNIFTIhdr; var srcimg: TInt32s): boolean; overload;
+var
+	maskImg: TUInt8s;
+	i,j, k, vx, vol: int64;	
+begin
+	if fnm = '' then exit(true);
+	if not loadMask(fnm, srchdr, maskImg) then exit(false);
+	if maskImg = nil then exit(false);
+	vol := max(1, srchdr.dim[4]);
+	vx :=  srchdr.dim[1] *  srchdr.dim[2] *  srchdr.dim[3];
+	for j := 0 to (vol-1) do begin
+		k := j * vx;
+		for i := 0 to (vx-1) do 
+			if maskImg[i] = 0 then
+				srcimg[i+k] := 0;
+	end; //for vol
+	result := true;
+end; //apply mask
 
 procedure changeDataType(var lHdr: TNIFTIhdr; var rawData: TUInt8s; outDT: integer; isVerbose: boolean = false);
 var
@@ -213,9 +330,9 @@ begin
      end;
 end;
 
-function HdrVolumes(hdr: TNIfTIhdr): integer;
+function HdrVolumes(hdr: TNIfTIhdr): int64;
 var
-  i: integer;
+  i: int64;
 begin
      result := 1;
      for i := 4 to 7 do
@@ -223,13 +340,13 @@ begin
             result := result * hdr.dim[i];
 end;
 
-function HdrVolBytes4D(hdr: TNIfTIhdr): integer;
+function HdrVolBytes4D(hdr: TNIfTIhdr): int64;
 begin
 	result := hdr.Dim[1]*hdr.Dim[2]*hdr.Dim[3] * (hdr.bitpix div 8) *  HdrVolumes(hdr);
 end;
 
 {$IFDEF BZIP2}
-function LoadImgBZ(FileName : AnsiString; var  rawData: TUInt8s; var lHdr: TNIFTIHdr; gzBytes: integer): boolean;
+function LoadImgBZ(FileName : AnsiString; var  rawData: TUInt8s; var lHdr: TNIFTIHdr; gzBytes: int64): boolean;
 //foreign: both image and header compressed
 label
 	123;
@@ -265,7 +382,7 @@ end;
 {$ENDIF}//BZIP2
 
 {$IFDEF GZIP}
-function LoadHdrRawImgGZ(FileName : AnsiString; var  rawData: TUInt8s; var lHdr: TNIFTIHdr; gzBytes: integer): boolean;
+function LoadHdrRawImgGZ(FileName : AnsiString; var  rawData: TUInt8s; var lHdr: TNIFTIHdr; gzBytes: int64): boolean;
 var
    fStream: TFileStream;
    inStream, outStream: TMemoryStream;
@@ -401,26 +518,93 @@ begin
      i8 := nil;
 end;
 
-function saveNii(fnm: string; var oHdr: TNIFTIhdr; var orawVolBytes: TUInt8s; isGz: boolean): boolean; overload;
+{$IFDEF UNIX}
+function saveNiiPigz(fnm: string; var oHdr: TNIFTIhdr; var orawVolBytes: TUInt8s; maxthreads: integer = 0): boolean;
+var
+	pigz: string;
+	oPad32: Uint32; //nifti header is 348 bytes padded with 4
+	f: file;
+begin
+	result := false;
+	pigz := '';
+	if not RunCommand('/bin/bash -l -c "which pigz"', pigz) then exit;
+	pigz := extractfilepath(pigz)+'pigz'; //remove EOLN generated by which
+	if not FileExists(pigz) then exit(false);
+	if maxthreads > 1 then
+		pigz += ' -p '+inttostr(maxthreads);
+	pigz += ' -n -f -6 > '+fnm;
+	printf('"'+pigz+'"');
+	
+	oHdr.vox_offset :=  sizeof(oHdr) + 4;
+	oPad32 := 4;
+	POpen (f,pigz,'W');
+	BlockWrite(f, oHdr, sizeof(TNIFTIhdr));
+	BlockWrite(f, oPad32, sizeof(oPad32));
+	Blockwrite(f, oRawVolBytes[0], length(orawVolBytes));
+	CloseFile(f);	
+	PClose(f);
+	result := true;     
+end;
+{$ENDIF}
+
+procedure FixQForm(oHdr);
+var
+	qto_xyz: mat44;
+begin
+	hdr.qform_code <> kNIFTI_XFORM_UNKNOWN then exit;
+	LOAD_MAT44(qto_xyz, nhdr.srow_x[0], nhdr.srow_x[1], nhdr.srow_x[2], nhdr.srow_x[3],
+              nhdr.srow_y[0], nhdr.srow_y[1], nhdr.srow_y[2], nhdr.srow_y[3],
+              nhdr.srow_z[0], nhdr.srow_z[1], nhdr.srow_z[2], nhdr.srow_z[3]);
+	nifti_mat44_to_quatern( qto_xyz , hdr.quatern_b, hdr.quatern_c, hdr.quatern_d,hdr.qoffset_x,hdr.qoffset_y,hdr.qoffset_z, dumdx, dumdy, dumdz,hdr.pixdim[0]) ;
+	hdr.qform_code  := hdr.sform_code;
+end;
+
+function saveNii(fnm: string; var oHdr: TNIFTIhdr; var orawVolBytes: TUInt8s; isGz: boolean; maxthreads: integer = 0): boolean; overload;
 var
   mStream : TMemoryStream;
   zStream: TGZFileStream;
   oPad32: Uint32; //nifti header is 348 bytes padded with 4
   lExt,NiftiOutName: string;
+  f: file;
+  szGb: single;
 begin
  result := true;
  fnm :=  fnm + '.nii';
  if isGz then
  	fnm := fnm + '.gz';
- if fileexists(fnm) then
+ FixQForm(oHdr);
+if fileexists(fnm) then
  	printf('Overwriting "'+fnm+'"')
  else
  	printf('Converted "'+fnm+'"');
- mStream := TMemoryStream.Create;
  oHdr.vox_offset :=  sizeof(oHdr) + 4;
- mStream.Write(oHdr,sizeof(oHdr));
  oPad32 := 4;
- mStream.Write(oPad32, 4);
+ szGb := length(orawVolBytes) / (0.25*power(2,32));
+  if (not isGz) then begin
+ 	//TMemoryStream has problems with files > 4Gb
+ 	if szGb > 1.95 then //Neither GZip nor TMemoryStream work well with large files
+ 		printf(format('Warning: huge file size (%g Gb)', [szGb]));
+	Filemode := 1;
+	AssignFile(f, fnm); {WIN}
+	Rewrite(f,1);
+	BlockWrite(f, oHdr, sizeof(TNIFTIhdr));
+	BlockWrite(f, oPad32, sizeof(oPad32));
+	Blockwrite(f, oRawVolBytes[0], length(orawVolBytes));
+	CloseFile(f);
+	Filemode := 2;
+ 	exit;
+ end;
+ 
+ if szGb > 1.95 then //Neither GZip nor TMemoryStream work well with large files
+ 	printf(format('Warning: GZip ill-suited for large files (%g Gb)', [szGb]));
+ {$IFDEF UNIX}
+ if maxthreads <> 1 then
+ 	if saveNiiPigz(fnm, oHdr, orawVolBytes, maxthreads) then 
+ 		exit;
+ {$ENDIF}
+ mStream := TMemoryStream.Create;
+ mStream.Write(oHdr,sizeof(oHdr));
+ mStream.Write(oPad32, 4); 	
  mStream.Write(oRawVolBytes[0], length(orawVolBytes));
  oRawVolBytes := nil;
  mStream.Position := 0;
@@ -442,17 +626,17 @@ begin
  FileMode := fmOpenRead;
 end;
 
-function saveNii(fnm: string; var lHdr: TNIFTIhdr; var rawData: TUInt8s; isGz, is3D: boolean): boolean; overload;
+function saveNii(fnm: string; var lHdr: TNIFTIhdr; var rawData: TUInt8s; isGz, is3D: boolean; maxthreads: integer = 0): boolean; overload;
 //handles saving 4D data as 3D volumes...
 var
-	v, nvol, pad: integer;
+	v, nvol, pad: int64;
 	bytesPerVol: int64;
 	rawDataVol: TUInt8s;
 begin
 	 result := false;
 	 nvol := lHdr.dim[4];
 	 if (nvol < 2) or (not is3D) then begin
-	 	result := saveNii(fnm, lHdr, rawData, isGz);
+	 	result := saveNii(fnm, lHdr, rawData, isGz, maxthreads);
 	 	exit;
 	 end; 
 	 //only 4D->3D datasets follow...	
@@ -464,7 +648,7 @@ begin
 	 for v := 0 to (nvol-1) do begin
 		setlength(rawDataVol, bytesPerVol);
 		rawDataVol := copy(rawData, v * bytesPerVol, bytesPerVol);
-		result := saveNii(fnm+strutils.Dec2Numb(v+1,pad,10), lHdr, rawDataVol, isGz);	
+		result := saveNii(fnm+strutils.Dec2Numb(v+1,pad,10), lHdr, rawDataVol, isGz, maxthreads);	
 	end; //for v: each volume
 	rawData := nil;
 end;
@@ -516,6 +700,18 @@ begin
     end;
 end;
 
+{$IFNDEF LOADFOREIGN}
+function FSize (lFName: String): Int64;
+var SearchRec: TSearchRec;
+begin
+  result := 0;
+  if not fileexists(lFName) then exit;
+  FindFirst(lFName, faAnyFile, SearchRec);
+  result := SearchRec.size;
+  FindClose(SearchRec);
+end;
+{$ENDIF}
+
 function loadVolumes(var FileName: string; out lHdr: TNIFTIhdr; out rawData: TUInt8s; out isInputNIfTI: boolean): boolean;
 var
   ifnm: string;
@@ -537,8 +733,10 @@ begin
      //set output directory
      ok := readNiftiHdr(FileName, lHdr, gzBytes, swapEndian, isDimPermute2341);
      isInputNIfTI := ok;
+     {$IFDEF LOADFOREIGN}
      if not ok then 
         ok := readForeignHeader(FileName, lHdr, gzBytes, swapEndian, isDimPermute2341);
+     {$ENDIF}
      if not ok then begin
         printf('Unable to interpret header "'+FileName+'"');
         exit;

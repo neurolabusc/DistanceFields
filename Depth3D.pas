@@ -10,7 +10,7 @@ uses
 	{$endif}
 	SimdUtils, VectorMath,
 	distance_field,  dateutils, StrUtils, sysutils, Classes, nifti_types, 
-	nifti_loadsave, nifti_foreign, resize, math;
+	nifti_loadsave, nifti_foreign, nifti_resize, math, nifti_smooth;
 
 const
     kEXIT_SUCCESS = 0;
@@ -23,7 +23,7 @@ const
     kSave_Intensity = 1;
     kSave_Both = 2;
     kSave_None = 3;
-    kVers = 'v1.0.20191126';
+    kVers = 'v1.0.20191206';
     
     
 function isIsotropic(var hdr: TNIFTIhdr): boolean;
@@ -37,17 +37,35 @@ begin
 	exit(true);
 end;
 
-function distanceFieldAll(fnm, outName: string; isGz, is3D: boolean; isImg, isTxt: integer; threshold: single = 0.5; maxthreads: integer = 0; superSample: integer = 1; clusterType: integer = 26; smallestClusterVox: integer = 1; maskName: string = ''): boolean;
+function smoothGauss(var hdr: TNIFTIhdr; var img: TFloat32s; fwhm: single; maxthreads: integer): boolean;
 var
-	hdr: TNIFTIhdr;
+	i, vx: integer;
+begin
+	if fwhm = 0 then exit(true);
+	writeln(format('Applying %gmm FWHM Gaussian blur', [fwhm]));
+	vx := hdr.dim[1] * hdr.dim[2] * max(hdr.dim[3],1) * max(hdr.dim[4],1);
+	for i := 0 to vx-1 do
+		if img[i] = 0 then
+			img[i] := NaN;
+	nii_smooth_gauss (hdr, img, fwhm, maxthreads, true);
+	exit(true);
+end;
+
+function distanceFieldAll(fnm, outName: string; isGz, is3D: boolean; isImg, isTxt, outDataType: integer; threshold: single = 0.5; maxthreads: integer = 0; superSample: integer = 1; clusterType: integer = 26; smallestClusterVox: integer = 1; fwhm: single = 0; maskName: string = ''): boolean;
+var
+	hdr, ihdr: TNIFTIhdr;
 	img, intensityImg: TUInt8s;
+	mm: single;
 	isInputNIfTI: boolean;
 	txtNam, ext: string;
 	superSampleXYZ: TVec3;
+	startTime: TDateTime;
 begin
 	result := false;
 	intensityImg := nil;
-	superSampleXYZ := Vec3(superSample, superSample, superSample);
+	if superSample = 0 then
+		superSample := 1;
+	superSampleXYZ := Vec3(abs(superSample), abs(superSample), abs(superSample));
 	if (threshold = 0) and ((isImg = kSave_Intensity) or (isImg = kSave_Both)) then begin
 		writeln('Saving intensity maps is not designed for atlases (where threshold = 0).');
 		exit;
@@ -56,6 +74,10 @@ begin
 	if (hdr.dim[1] < 2) or (hdr.dim[2] < 2) then begin
 		writeln('File dimensions too small');
 		exit;
+	end;
+	if (fwhm < 0) then begin
+		mm := min(abs(hdr.pixdim[1]), abs(hdr.pixdim[2]));
+		fwhm := abs(fwhm) * mm;
 	end;
 	if outName = '' then begin
 		if isImg = kSave_Intensity then
@@ -78,12 +100,16 @@ begin
 	//	if not makeClusters(hdr, img, threshold, clusterType, smallestClusterMM3) then exit;	
 	//end;
 	
-	if (superSample > 1) or (not isIsotropic(hdr)) then begin
+	if (superSample <> 1) or (not isIsotropic(hdr)) then begin
 		if (threshold = 0) or (hdr.dim[4] > 1) then begin 
-			if superSample <= 1 then
+			if superSample <> 1 then
 				writeln('Error: atlases and 4D images must be isotropic.')
 			else
 				writeln('Error: super sampling not supported for atlases or 4D images.');
+			exit;
+		end;
+		if (superSample < 1) and (not isIsotropic(hdr)) then begin
+			writeln('Negative supersampling does not work with anisotropic images.');
 			exit;
 		end;
 		if (isTxt <> kText_No) then
@@ -91,26 +117,52 @@ begin
 		if (smallestClusterVox > 1) then
 			writeln('Be aware that minimum cluster extent based on up-sampled voxels');
 		changeDataType(hdr, img, kDT_FLOAT32);
+		startTime:= Now();
 		result := ShrinkOrEnlarge(hdr, img, superSampleXYZ, maxthreads);
+		writeln(format('Upsample required %.3f seconds.', [MilliSecondsBetween(Now,startTime)/1000.0]));
 		if not result then begin
 			writeln('Supersampling error');
 			exit;
 		end;
-		writeln(format('Depth estimated on %g*%g*%g supersampling (%d*%d*%d voxels).',[superSampleXYZ.X, superSampleXYZ.Y, superSampleXYZ.Z, hdr.dim[1], hdr.dim[2], hdr.dim[3] ]));
+		writeln(format('Depth estimated on %g*%g*%g supersampling (%dx%dx%d voxels).',[superSampleXYZ.X, superSampleXYZ.Y, superSampleXYZ.Z, hdr.dim[1], hdr.dim[2], hdr.dim[3] ]));
+		startTime:= Now();
 		result := distanceFieldVolume(hdr, img, intensityImg, txtNam, threshold, maxthreads, clusterType, smallestClusterVox, maskName);
+		writeln(format('Euclidean Distance Transform required %.3f seconds.', [MilliSecondsBetween(Now,startTime)/1000.0]));
+		if (fwhm <> 0) then begin
+			startTime:= Now();
+			smoothGauss(hdr, TFloat32s(img), fwhm, maxthreads);
+			writeln(format('Blur required %.3f seconds.', [MilliSecondsBetween(Now,startTime)/1000.0]));
+		end;
 		superSampleXYZ := 1.0 / superSampleXYZ;
-		ShrinkOrEnlarge(hdr, img, superSampleXYZ, maxthreads);
+		startTime:= Now();
+		if (superSample < 0) then 
+			ShrinkMax(hdr, img, abs(superSample), maxthreads)
+		else
+			ShrinkOrEnlarge(hdr, img, superSampleXYZ, maxthreads);
+		writeln(format('Downsample required %.3f seconds.', [MilliSecondsBetween(Now,startTime)/1000.0]));
+		
 	end else if (threshold = 0) then begin
 		if (smallestClusterVox > 1) then
 			writeln('Warning: minimum cluster size not used for atlases');
-		result := distanceFieldAtlas(hdr, img, txtNam, maxthreads, maskName)
-	end else
+		result := distanceFieldAtlas(hdr, img, txtNam, maxthreads, maskName);
+		smoothGauss(hdr, TFloat32s(img), fwhm, maxthreads);
+	end else begin
+		if (fwhm <> 0) then 
+			writeln('Blur ignored for atlases');
 		result := distanceFieldVolume(hdr, img, intensityImg, txtNam, threshold, maxthreads, clusterType, smallestClusterVox, maskName);
+	end;
 	if not result then exit;
-	if (isImg = kSave_None) then exit;
+	if (isImg = kSave_None) then exit;		
 	hdr.descrip := 'Depth3D '+kVers;
+	ihdr := hdr;
+	if outDataType <> kDT_FLOAT32 then begin
+		if (isImg = kSave_Depth) or (isImg = kSave_Both) then
+			changeDataType(hdr, img, outDataType);
+		if (isImg = kSave_Intensity) or (isImg = kSave_Both) then
+			changeDataType(ihdr, intensityImg, outDataType);
+	end;
 	if (isImg = kSave_Depth) or (isImg = kSave_Both) then 
-		result := saveNii(outName, hdr, img, isGz, is3D);
+		result := saveNii(outName, hdr, img, isGz, is3D, maxthreads);
 	if not result then  exit;
 	if (intensityImg = nil) and ((isImg = kSave_Intensity) or (isImg = kSave_Both)) then begin
 		result := false;
@@ -118,25 +170,38 @@ begin
 		exit;
 	end;
 	if (isImg = kSave_Intensity) then 
-		result := saveNii(outName, hdr, intensityImg, isGz, is3D);
+		result := saveNii(outName, ihdr, intensityImg, isGz, is3D, maxthreads);
+	writeln(format('Saving %dx%dx%d voxels:',[hdr.dim[1], hdr.dim[2], hdr.dim[3] ]));		
 	if (isImg = kSave_Both) then
-		result := saveNii(outName+'_intensity', hdr, intensityImg, isGz, is3D);	
+		result := saveNii(outName+'_intensity', ihdr, intensityImg, isGz, is3D, maxthreads);	
 end;
 
 procedure showhelp;
 var
-    exeName, outDir, inDir: string;
+    exeName, outDir, inDir, os: string;
 begin
     exeName := extractfilename(ParamStr(0));
+    os := format('%d-bit ', [sizeof(pointer)*8]);
+    if (sizeof(pointer) <> sizeof(integer)) then //fpc defaults to 32-bit integers on 64-bit MacOS
+    	os := os + format('(%d-bit ints) ', [sizeof(pointer)*8]);	
     {$IFDEF WINDOWS}
     exeName := ChangeFileExt(exeName, ''); //i2nii.exe -> i2nii
+    os := os + 'Windows';
     {$ENDIF}
-    writeln('Chris Rorden''s '+exeName+' '+kVers);
+    {$IFDEF Linux}
+    os := os + 'Linux';
+    {$ENDIF}    
+    {$IFDEF Darwin}
+    os := os + 'MacOS';
+    {$ENDIF}    
+    writeln('Chris Rorden''s '+exeName+' '+os+kVers);
     writeln(format('usage: %s [options] <in_file(s)>', [exeName]));
 	writeln('Reads volume and computes distance fields');
 	writeln('OPTIONS');
     writeln(' -3 : save 4D data as 3D files (y/n, default n)');
+    writeln(' -b : blur, specify full-width half maximum (positive=mm, negative=voxels, default 0)');
     writeln(' -c : connectivity neighbors (6=faces, 18=edges, 26=corners, default 26)');
+    writeln(' -d : output datatype (u8/u16/f32 default f32)');
     writeln(' -h : show help');
     writeln(' -i : inverted mask image (ignore voxels with value of non-zero in mask)');
     writeln(' -k : mask image (ignore voxels with value of zero in mask)');
@@ -147,7 +212,8 @@ begin
     writeln(' -m : minimum cluster extent in voxels (default 1)');
     writeln(' -p : parallel threads (0=optimal, 1=one, 5=five, default 0)');
     writeln(' -s : save images (d,i,b,n: depth, intensity, both, none, default t) ');
-    writeln(' -u : upsample for continuous images (1=x1, 2=x2, 5=x5, default 1)');
+    writeln(' -u : upsample for continuous images (1=x1, 5=x5 default 1)');
+    writeln('       negative values for maximum of upsampled voxels.');
     writeln(' -z : gz compress images (y/n, default n)');
     writeln(' Examples :');
     {$IFDEF WINDOWS}
@@ -180,6 +246,8 @@ var
     startTime: TDateTime;
     maxthreads: integer = 0;
     threshold: single = 0.5; 
+    outDataType: integer = kDT_FLOAT32;
+    fwhm: single = 0;
     superSample: integer = 1;
     outName: string = '';
     maskName: string = '';
@@ -197,7 +265,7 @@ begin
         if length(s) < 1 then continue; //possible?
         if s[1] <> '-' then begin
             nAttempt := nAttempt + 1;
-            if distanceFieldAll(s, outName, isGz, is3D, isImg, isTxt, threshold, maxthreads, superSample, clusterType, smallestClusterVox, maskName) then
+            if distanceFieldAll(s, outName, isGz, is3D, isImg, isTxt, outDataType, threshold, maxthreads, superSample, clusterType, smallestClusterVox, fwhm, maskName) then
                 nOK := nOK + 1;
             continue;
         end;
@@ -210,8 +278,19 @@ begin
         if length(v) < 1 then continue; //e.g. 'i2nii -o ""'
         if c =  '3' then
             is3D := upcase(v[1]) = 'Y'; 
+        if c = 'B' then
+        	fwhm := strtofloatdef(v, fwhm);  
         if c =  'C' then
-            clusterType := strtointdef(v, 26); 
+            clusterType := strtointdef(v, 26);
+        if c = 'D' then begin
+       		v := upcase(v);
+       		//if Pos('I8',v) > 0 then outDataType := kDT_INT8;
+       		//if Pos('I16',v) > 0 then outDataType := kDT_INT16;
+       		if Pos('U8',v) > 0 then outDataType := kDT_UINT8;
+       		if Pos('U16',v) > 0 then outDataType := kDT_UINT16;
+       		if Pos('F32',v) > 0 then outDataType := kDT_FLOAT32;
+       		//if Pos('IN',v) > 0 then outDataType := kDT_input;
+        end;
         if c = 'I' then
         	maskName := '*'+v;
         if c = 'K' then
