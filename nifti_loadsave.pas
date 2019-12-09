@@ -547,14 +547,15 @@ begin
 end;
 {$ENDIF}
 
-procedure FixQForm(oHdr);
+procedure FixQForm(var hdr: TNIFTIhdr);
 var
 	qto_xyz: mat44;
+	dumdx, dumdy, dumdz: single;
 begin
-	hdr.qform_code <> kNIFTI_XFORM_UNKNOWN then exit;
-	LOAD_MAT44(qto_xyz, nhdr.srow_x[0], nhdr.srow_x[1], nhdr.srow_x[2], nhdr.srow_x[3],
-              nhdr.srow_y[0], nhdr.srow_y[1], nhdr.srow_y[2], nhdr.srow_y[3],
-              nhdr.srow_z[0], nhdr.srow_z[1], nhdr.srow_z[2], nhdr.srow_z[3]);
+	if hdr.qform_code <> kNIFTI_XFORM_UNKNOWN then exit;
+	LOAD_MAT44(qto_xyz, hdr.srow_x[0], hdr.srow_x[1], hdr.srow_x[2], hdr.srow_x[3],
+              hdr.srow_y[0], hdr.srow_y[1], hdr.srow_y[2], hdr.srow_y[3],
+              hdr.srow_z[0], hdr.srow_z[1], hdr.srow_z[2], hdr.srow_z[3]);
 	nifti_mat44_to_quatern( qto_xyz , hdr.quatern_b, hdr.quatern_c, hdr.quatern_d,hdr.qoffset_x,hdr.qoffset_y,hdr.qoffset_z, dumdx, dumdy, dumdz,hdr.pixdim[0]) ;
 	hdr.qform_code  := hdr.sform_code;
 end;
