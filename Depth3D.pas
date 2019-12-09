@@ -171,7 +171,7 @@ begin
 	end;
 	if (isImg = kSave_Intensity) then 
 		result := saveNii(outName, ihdr, intensityImg, isGz, is3D, maxthreads);
-	writeln(format('Saving %dx%dx%d voxels:',[hdr.dim[1], hdr.dim[2], hdr.dim[3] ]));		
+	writeln(format('Saving %dx%dx%d voxels: %s',[hdr.dim[1], hdr.dim[2], hdr.dim[3], outName ]));		
 	if (isImg = kSave_Both) then
 		result := saveNii(outName+'_intensity', ihdr, intensityImg, isGz, is3D, maxthreads);	
 end;

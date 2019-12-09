@@ -18,21 +18,26 @@ You can get Depth3D using two methods:
 ## Usage
 
 ```
-Chris Rorden's Depth3D v1.0.20191123
+Chris Rorden's Depth3D 64-bit (64-bit ints) MacOSv1.0.20191206
 usage: Depth3D [options] <in_file(s)>
 Reads volume and computes distance fields
 OPTIONS
  -3 : save 4D data as 3D files (y/n, default n)
+ -b : blur, specify full-width half maximum (positive=mm, negative=voxels, default 0)
  -c : connectivity neighbors (6=faces, 18=edges, 26=corners, default 26)
+ -d : output datatype (u8/u16/f32 default f32)
  -h : show help
+ -i : inverted mask image (ignore voxels with value of non-zero in mask)
+ -k : mask image (ignore voxels with value of zero in mask)
  -o : output name (omit to save as input name with "depth_" prefix)
  -r : report table (y/n/s: yes, no, screen, default n)
  -t : threshold, less extreme values treated as outside (default 0.5)
        set to 0 for separate field for each region of an atlas
  -m : minimum cluster extent in voxels (default 1)
  -p : parallel threads (0=optimal, 1=one, 5=five, default 0)
- -s : save images (t,i,b,n: depth, intensity, both, none, default t) 
- -u : upsample for continuous images (1=x1, 2=x2, 5=x5, default 1)
+ -s : save images (d,i,b,n: depth, intensity, both, none, default t) 
+ -u : upsample for continuous images (1=x1, 5=x5 default 1)
+       negative values for maximum of upsampled voxels.
  -z : gz compress images (y/n, default n)
  Examples :
   Depth3D -t 0 ./test/AICHA.nii.gz
@@ -41,6 +46,7 @@ OPTIONS
   Depth3D -t 0.5 ./test/isotropic.nii.gz
   Depth3D -t 0.25 -u 3 ./test/avg152T1_gray.nii.gz
   Depth3D -t 3 -m 5 -r s -s n ./test/motor.nii.gz
+  Depth3D -k ./test/isotropic_mask.nii.gz ./test/isotropic.nii.gz
   Depth3D -o "~/out dir/OutputImg" -t 0.5 "./test/name with spaces"
 ```
 
@@ -178,7 +184,7 @@ fpc Depth3D
 
 ## Performance
 
-This is a very fast algorithm. However, atlas images are necessarily complex, as depth is computed for each region independently. This tool uses several tricks that accelerate these cases. First, we can use a simple forward and back sweep for the [first transformation](https://github.com/seung-lab/euclidean-distance-transform-3d). Second, depth is only computed for a box constrained by the size of the region being computed, rather than for the entire volume. This is useful for atlases with many regions, where each region typically is only a small portion of the overall 3D volume. In general, this trick makes the algorithm about 5 times faster. Finally, this algorithm can leverage parallel processing. The included sample [AICHA](http://www.gin.cnrs.fr/en/tools/aicha/) atlas has 384 regions (91*109*91 voxels). It requires 1.7 seconds to process in single threaded mode and 0.43 seconds for threaded conversion on a 4-core (8-thread) laptop. 
+This is a very fast algorithm. However, atlas images are necessarily complex, as depth is computed for each region independently. This tool uses several tricks that accelerate these cases. First, we can use a simple forward and back sweep for the [first transformation](https://github.com/seung-lab/euclidean-distance-transform-3d). Second, depth is only computed for a box constrained by the size of the region being computed, rather than for the entire volume. This is useful for atlases with many regions, where each region typically is only a small portion of the overall 3D volume. In general, this trick makes the algorithm about 5 times faster. Finally, this algorithm can leverage parallel processing. The included sample [AICHA](http://www.gin.cnrs.fr/en/tools/aicha/) atlas has 384 regions (91*109*91 voxels). It requires 1.7 seconds to process in single threaded mode and 0.43 seconds for threaded conversion on a 4-core (8-thread) laptop. Alternatively, consider a 512x512x512 voxel image converted with "Depth3D -u -3 maskedset.nii" - this requires 58 seconds on a 12 core Ryzen (14s upsample to 1536x1536x1536, 40s distance transform, 2s downsample stiring peaks to original resolution).  The same machine running a single thread ("Depth3D -u -3 -p 1 maskedset.nii") requires 417 seconds (39s upsample, 361s transform, 14s downsample).
 
 ## Supported Image Formats
 
