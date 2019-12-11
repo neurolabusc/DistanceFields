@@ -17,10 +17,7 @@ uses
 {$IFDEF GZIP}zstream, {$ENDIF}
 {$IFDEF GUI}
  dialogs,
-{$ELSE}
- dialogsx,
 {$ENDIF}
-//ClipBrd,
  nifti_types,  sysutils, classes, StrUtils, math;//2015! dialogsx
 
 const
@@ -99,13 +96,21 @@ Type
   vect3 = array [0..2] of Single;
   ivect3 = array [0..2] of integer;
 
-procedure printf(str: string);
+procedure NSLog( str: string);
 begin
-  {$IFDEF Windows}
-  if IsConsole then //'System' in uses
-     writeln(str);
+  {$IFDEF GUI}
+  showmsg(str);
   {$ENDIF}
-  {$IFDEF UNIX} writeln(str);{$ENDIF}
+  {$IFDEF UNIX}writeln(str);{$ENDIF}
+end;
+
+procedure ShowMsg(s: string);
+begin
+	{$IFDEF GUI}
+	showmessage(s);
+	{$ELSE}
+	NSLog(s);
+	{$ENDIF}
 end;
 
 
@@ -877,14 +882,6 @@ begin
   nhdr.sform_code := 1;
   nifti_mat44_to_quatern( qto_xyz , nhdr.quatern_b, nhdr.quatern_c, nhdr.quatern_d,nhdr.qoffset_x,nhdr.qoffset_y,nhdr.qoffset_z, dumdx, dumdy, dumdz,nhdr.pixdim[0]) ;
   nhdr.qform_code := 0;//kNIFTI_XFORM_SCANNER_ANAT;
-end;
-
-procedure NSLog( str: string);
-begin
-  {$IFDEF GUI}
-  showmsg(str);
-  {$ENDIF}
-  {$IFDEF UNIX}writeln(str);{$ENDIF}
 end;
 
 function parsePicString(s: string): single;
@@ -3298,7 +3295,7 @@ end;
 
 (*procedure Report_Mat(var nhdr: TNIFTIhdr);
 begin
-     printf(format('m=[%g %g %g %g; %g %g %g %g; %g %g %g %g; 0 0 0 1]',[nhdr.srow_x[0], nhdr.srow_x[1], nhdr.srow_x[2], nhdr.srow_x[3],
+     NSLogformat('m=[%g %g %g %g; %g %g %g %g; %g %g %g %g; 0 0 0 1]',[nhdr.srow_x[0], nhdr.srow_x[1], nhdr.srow_x[2], nhdr.srow_x[3],
        nhdr.srow_y[0], nhdr.srow_y[1], nhdr.srow_y[2], nhdr.srow_y[3],
         nhdr.srow_z[0], nhdr.srow_z[1], nhdr.srow_z[2], nhdr.srow_z[3] ]));
 
@@ -3306,7 +3303,7 @@ end;
 
 procedure m33 (m: mat33);
 begin
-     printf(format('m=[%g %g %g; %g %g %g; %g %g %g]',
+     NSLogformat('m=[%g %g %g; %g %g %g; %g %g %g]',
        [m[0,0], m[0,1], m[0,2],
         m[1,0], m[1,1], m[1,2],
         m[2,0], m[2,1], m[2,2]  ]));
@@ -3729,19 +3726,19 @@ begin
   if isOK then
      result := true;
   if not isPixDim then
-    printf('Interfile missing "scaling factor" (pixdim)');
-  printf(format('Interfile dim %dx%dx%d %dbpp pixdim %.3fx%.3fx%.3f', [nhdr.dim[1], nhdr.dim[2], nhdr.dim[3], bpp, nhdr.pixdim[1], nhdr.pixdim[2], nhdr.pixdim[3]]));
+    NSLog('Interfile missing "scaling factor" (pixdim)');
+  NSLog(format('Interfile dim %dx%dx%d %dbpp pixdim %.3fx%.3fx%.3f', [nhdr.dim[1], nhdr.dim[2], nhdr.dim[3], bpp, nhdr.pixdim[1], nhdr.pixdim[2], nhdr.pixdim[3]]));
   //two methods to determine origin: "first pixel offset" or Siemens usage of "image info"
   if isLPI then
     lpi2ras(nhdr, xyzmm1, xyzmmMax)
   else if not isOrigin then
-    printf('Unable to determine origin');
+    NSLog('Unable to determine origin');
 666:
     CloseFile(FP);
     Filemode := 2;
   if not result then begin
      NSLog('Interfile error "'+errStr+'" ');
-     //printf(format('  %dx%dx%d %dbpp', [nhdr.dim[1], nhdr.dim[2], nhdr.dim[3], bpp]));
+     //NSLogformat('  %dx%dx%d %dbpp', [nhdr.dim[1], nhdr.dim[2], nhdr.dim[3], bpp]));
      exit; //error - code jumped to 666 without setting result to true
   end;
   nhdr.descrip := 'Interfile'+kIVers;
@@ -4014,7 +4011,7 @@ begin
            end;
            if (nv = 99999) or (nv < 1) then begin
            	sList.Free;
-           	printf('Unable to parse VALUE_LABEL_DTABLE');
+           	NSLog('Unable to parse VALUE_LABEL_DTABLE');
            	continue;
            end;
            //second pass
@@ -4194,7 +4191,7 @@ begin
                   AFNIs[i].minVal := valArray[i*2];
                   AFNIs[i].maxVal := valArray[(i*2)+1];
                   AFNIs[i].maxAbsVal := max(abs(AFNIs[i].minVal), abs(AFNIs[i].maxVal));
-                 //printf(format('min..max %g..%g', [AFNIs[i].minVal, AFNIs[i].maxVal]));
+                 //NSLogformat('min..max %g..%g', [AFNIs[i].minVal, AFNIs[i].maxVal]));
               end;
          end else if AnsiContainsText(nameStr,'IJK_TO_DICOM_REAL') then begin
          
@@ -4222,7 +4219,7 @@ begin
              setlength(AFNIs[iv].FDRcurv.ar, itemCount-2);
              for i := 0 to (itemCount-3) do
                  AFNIs[iv].FDRcurv.ar[i] := valArray[i+2];
-             //printf(format('%d %d', [iv,itemCount]));
+             //NSLogformat('%d %d', [iv,itemCount]));
          end else if AnsiContainsText(nameStr,'BRICK_FLOAT_FACS') then begin
               nhdr.scl_slope := valArray[0];
               if nhdr.scl_slope = 0 then

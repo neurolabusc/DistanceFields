@@ -91,12 +91,13 @@ begin
 	result := true;
 end;
 {$ELSE}
-function ShrinkMaxk(var hdr: TNIFTIhdr; var img: TUInt8s; scale: integer; maxthreads: integer = 0): boolean;
+function ShrinkMax(var hdr: TNIFTIhdr; var img: TUInt8s; scale: integer; maxthreads: integer = 0): boolean;
 //integer reduction, for each output voxel reports peak of all contributing input voxels
 var
-	i, inX, outX, outXY, outSlice, inRow, inSlice, inPos, outPos, inY, inZT, inXY, outVox: int64;
+	inX, outX, outXY, inY, inXY, outVox: int64;
+	inImg, outImg: TFloat32s;	
+	i, inSlice, outSlice, inRow, outPos, inPos: int64;	
 	outImg8: TUInt8s;
-	inImg, outImg: TFloat32s;
 begin
 	result := false;
 	if (scale < 2) then exit;
@@ -106,7 +107,7 @@ begin
 	inX := hdr.dim[1];
 	inY := hdr.dim[2];
 	inXY := inX * inY;
-	inZT := hdr.dim[3]*max(hdr.dim[4], 1);
+	//inZT := 
 	//inVox := inX * inYZT;
 	hdr.dim[1] := hdr.dim[1] div scale;
 	hdr.dim[2] := hdr.dim[2] div scale;
@@ -122,7 +123,7 @@ begin
 	outImg := TFloat32s(outImg8);
 	for i := 0 to (outVox-1) do
 		outImg[i] := -infinity;
-	for inSlice := 0 to (inZT - 1) do begin
+	for inSlice := 0 to ((hdr.dim[3]*max(hdr.dim[4], 1)) -1) do begin
 		outSlice := (inSlice div scale) * outXY;
 		for inRow := 0 to (inY-1) do begin
 			inPos := (inSlice * inXY) + (inRow * inX);
@@ -137,6 +138,13 @@ begin
 	end;
 	img := nil; //free input image
 	img := outImg8; //return output image
+	for i := 0 to 2 do begin
+		hdr.srow_x[i] := hdr.srow_x[i] * scale;
+		hdr.srow_y[i] := hdr.srow_y[i] * scale;
+		hdr.srow_z[i] := hdr.srow_z[i] * scale;
+		
+	end;
+	hdr.qform_code := kNIFTI_XFORM_UNKNOWN;
 	result := true;
 end;
 {$ENDIF}
@@ -362,6 +370,8 @@ begin
      lHdr.qform_code := kNIFTI_XFORM_UNKNOWN;
 end;
 
+{$DEFINE LESS_RAM}
+{$IFDEF LESS_RAM}
 procedure Resize32(var lHdr: TNIFTIhdr; var lImg8: TUInt8s; xScale, yScale, zScale, fwidth: single; filter: TFilterProc; MaxThreads: PtrInt = 0);
 //rescales images with any dimension larger than lMaxDim to have a maximum dimension of maxdim...
 label
@@ -396,7 +406,6 @@ begin
 		end; //for X
 	end; //for Z
 end; //SubProcX()
-
 {$IFDEF MYTHREADS}
 procedure SubProcY(ThreadIndex: PtrInt; Data: Pointer; Item: TMultiThreadProcItem);
 {$ELSE}
@@ -551,6 +560,243 @@ begin
   end;
   lImg8 := finalImg;
 end; //Resize32()
+{$ELSE} //not LESS_RAM
+procedure FindRange(var hdr: TNIFTIhdr; var img: TFloat32s; out mn, mx: single);
+var
+	i, n: integer;
+begin
+	n := hdr.dim[1] * hdr.dim[2] * hdr.dim[3];
+	if n < 1 then exit;
+	mn := img[0];
+	mx := mn;
+	for i := 0 to (n-1) do begin
+		if (img[i] < mn) then mn := img[i];
+		if (img[i] > mx) then mx := img[i];		
+	end;	
+end;
+
+procedure CropRange(var hdr: TNIFTIhdr; var img: TFloat32s; mn, mx: single);
+var
+	i, n: integer;
+begin
+	n := hdr.dim[1] * hdr.dim[2] * hdr.dim[3];
+	if n < 1 then exit;
+	for i := 0 to (n-1) do begin
+		if (img[i] < mn) then img[i] := mn;
+		if (img[i] > mx) then img[i] := mx;		
+	end;	
+end;
+
+procedure ResizeX(var lHdr: TNIFTIhdr; var lImg8: TUInt8s; xScale, fwidth: single; filter: TFilterProc; MaxThreads: PtrInt = 0);
+//expand/shrink image in 1st dimension
+var
+	i, lXo, lXi, lYi, lZi, linePerThread, lineMax: int64;
+  	contrib: PCListList;
+  	inImg, outImg: TFloat32s; 
+{$IFDEF MYTHREADS}
+procedure SubProcX(ThreadIndex: PtrInt; Data: Pointer; Item: TMultiThreadProcItem);
+{$ELSE}
+procedure SubProcX(ThreadIndex: PtrInt); inline;
+{$ENDIF}
+var
+	lineStart, lineStartOut, lineEnd, line, x, j : int64;
+	sum: double;
+begin
+	lineStart := (ThreadIndex * linePerThread);
+	if (lineStart > lineMax) then exit; //more threads than slices in Z direction
+	lineEnd := lineStart + linePerThread - 1; //e.g. if zStart=4 and zPerThread=1 then zEnd=4 
+	lineEnd := min(lineEnd, lineMax); //final thread when slices in Z not evenly divisible by number of threads
+	for line := lineStart to lineEnd do begin
+		lineStart :=  (line*lXi);
+		lineStartOut := (line*lXo);
+		for x := 0 to (lXo - 1) do begin
+			sum := 0.0;
+			for j := 0 to contrib^[x].n - 1 do begin
+			  sum := sum + (contrib^[x].p^[j].weight * inImg[lineStart +contrib^[x].p^[j].pixel]);
+			end;
+			outImg[lineStartOut+x] := sum;
+		end; //for X
+	end; //for Z
+end; //SubProcX()
+begin
+	if (xScale = 1) then exit(); //nothing to do
+	{$IFDEF MYTHREADS}
+	if (MaxThreads < 1) then MaxThreads := GetSystemThreadCount();
+	{$ELSE}
+	MaxThreads := 1;
+	{$ENDIF}
+	lXi := lHdr.dim[1]; //input X
+	lYi := lHdr.dim[2]; //input X
+	lZi := lHdr.dim[3]; //input X
+	Zoom(lHdr,xScale, 1, 1);
+	//shrink in 1st dimension : do X as these are contiguous = faster, compute slower dimensions at reduced resolution
+	lXo := lHdr.dim[1]; //output X	
+	SetContrib(contrib, lXi, lXo, 1, xScale, fwidth, filter);
+	inImg := copy(TFloat32s(lImg8), 0, lXi * lYi * lZi);
+	setlength(lImg8,lXo*lYi*lZi*sizeof(single));
+	outImg := TFloat32s(lImg8);
+	lineMax := (lYi * lZi)-1;
+	linePerThread := ceil((lineMax+1)/MaxThreads);
+	{$IFDEF MYTHREADS}
+	ProcThreadPool.DoParallelNested(SubProcX,0,MaxThreads-1, nil, MaxThreads);
+	{$ELSE}
+	SubProcX(0);
+	{$ENDIF}
+	for i := 0 to lXo - 1 do
+    	FreeMem(contrib^[i].p);
+    FreeMem(contrib);
+    //writeln(format('x %d %d %d -> %d',[lXi,lYi,lZi, lXo]));
+end; //ResizeX()
+
+procedure ResizeY(var lHdr: TNIFTIhdr; var lImg8: TUInt8s; yScale, fwidth: single; filter: TFilterProc; MaxThreads: PtrInt = 0);
+//expand/shrink image in 1st dimension
+var
+	i, lYo, lXi, lYi, lZi, linePerThread, lineMax: int64;
+  	contrib: PCListList;
+  	inImg, outImg: TFloat32s; 
+{$IFDEF MYTHREADS}
+procedure SubProcY(ThreadIndex: PtrInt; Data: Pointer; Item: TMultiThreadProcItem);
+{$ELSE}
+procedure SubProcY(ThreadIndex: PtrInt); inline;
+{$ENDIF}
+var
+	lineStart, lineEnd, x, y, z, j, i : int64;
+	sum: double;
+begin
+	lineStart := (ThreadIndex * linePerThread);
+	if (lineStart > lineMax) then exit; //more threads than slices in Z direction
+	lineEnd := lineStart + linePerThread - 1; //e.g. if zStart=4 and zPerThread=1 then zEnd=4 
+	lineEnd := min(lineEnd, lineMax); //final thread when slices in Z not evenly divisible by number of threads
+	//i := lineStart * lXo * lYo;
+	i := lineStart * lYo * lXi;
+	for z := lineStart to lineEnd do begin
+	  for y := 0 to (lYo - 1) do begin
+		  for x := 0 to (lXi-1) do begin
+		  	lineStart :=  x+((lXi*lYi) * z);
+		  	sum := 0.0;
+		  	for j := 0 to contrib^[y].n - 1 do
+		  		sum := sum + (contrib^[y].p^[j].weight * inImg[lineStart +contrib^[y].p^[j].pixel] );
+			outImg[i] := sum;
+			//outImg[i] := random();
+			i := i + 1;
+		  end; //for X
+		end; //for Y
+	end; //for Z
+end; //SubProcY()
+begin
+	if (yScale = 1) then exit(); //nothing to do
+	{$IFDEF MYTHREADS}
+	if (MaxThreads < 1) then MaxThreads := GetSystemThreadCount();
+	{$ELSE}
+	MaxThreads := 1;
+	{$ENDIF}
+	lXi := lHdr.dim[1]; //input X
+	lYi := lHdr.dim[2]; //input X
+	lZi := lHdr.dim[3]; //input X
+	Zoom(lHdr,1, yScale, 1);
+	lYo := lHdr.dim[2]; //output Y	
+	SetContrib(contrib, lYi, lYo, lXi, yScale, fwidth, filter);
+  	inImg := copy(TFloat32s(lImg8), 0, lXi * lYi * lZi);
+	setlength(lImg8,lXi*lYo*lZi*sizeof(single));
+	outImg := TFloat32s(lImg8);
+	lineMax := lZi-1;
+	linePerThread := ceil((lineMax+1)/MaxThreads);
+	{$IFDEF MYTHREADS}
+	ProcThreadPool.DoParallelNested(SubProcY,0,MaxThreads-1, nil, MaxThreads);
+	{$ELSE}
+	SubProcY(0);
+	{$ENDIF}
+	for i := 0 to lYo - 1 do
+    	FreeMem(contrib^[i].p);
+    FreeMem(contrib);
+    //writeln(format('y d %d %d %d -> %d',[lXi,lYi,lZi, lYo]));
+end; //ResizeY()
+
+procedure ResizeZ(var lHdr: TNIFTIhdr; var lImg8: TUInt8s; zScale, fwidth: single; filter: TFilterProc; MaxThreads: PtrInt = 0);
+//expand/shrink image in 1st dimension
+var
+	i, lZo, lXi, lYi, lZi, linePerThread, lineMax: int64;
+  	contrib: PCListList;
+  	inImg, outImg: TFloat32s; 
+{$IFDEF MYTHREADS}
+procedure SubProcZ(ThreadIndex: PtrInt; Data: Pointer; Item: TMultiThreadProcItem);
+{$ELSE}
+procedure SubProcZ(ThreadIndex: PtrInt); inline;
+{$ENDIF}
+var
+	lineStart, lineEnd, x, y, z, j, i : int64;
+	sum: double;
+begin
+	lineStart := (ThreadIndex * linePerThread);
+	if (lineStart > lineMax) then exit; //more threads than slices in Z direction
+	lineEnd := lineStart + linePerThread - 1; //e.g. if zStart=4 and zPerThread=1 then zEnd=4 
+	lineEnd := min(lineEnd, lineMax); //final thread when slices in Z not evenly divisible by number of threads
+	i := lineStart * lXi * lYi;
+	for z := lineStart to lineEnd do begin
+      for y := 0 to (lYi - 1) do begin
+          for x := 0 to (lXi-1) do begin
+            lineStart :=  x+(lXi * y);
+            sum := 0.0;
+            for j := 0 to contrib^[z].n - 1 do begin
+              sum := sum + (contrib^[z].p^[j].weight * inImg[lineStart +contrib^[z].p^[j].pixel] );
+            end;
+            outImg[i] := sum;
+            i := i + 1;
+        end; //for X
+    end; //for Y
+  end; //for Z
+end; //SubProcZ()  
+begin
+	if (zScale = 1) then exit(); //nothing to do
+	{$IFDEF MYTHREADS}
+	if (MaxThreads < 1) then MaxThreads := GetSystemThreadCount();
+	{$ELSE}
+	MaxThreads := 1;
+	{$ENDIF}
+	lXi := lHdr.dim[1]; //input X
+	lYi := lHdr.dim[2]; //input X
+	lZi := lHdr.dim[3]; //input X
+	Zoom(lHdr,1, 1, zScale);
+	lZo := lHdr.dim[3]; //output Z	
+	inImg := copy(TFloat32s(lImg8), 0, lXi * lYi * lZi);
+	setlength(lImg8,lXi*lYi*lZo*sizeof(single));
+	outImg := TFloat32s(lImg8);
+	SetContrib(contrib, lZi, lZo, (lXi*lYi), zScale, fwidth, filter);
+	lineMax := lZo-1;
+	linePerThread := ceil((lineMax+1)/MaxThreads);
+	{$IFDEF MYTHREADS}
+	ProcThreadPool.DoParallelNested(SubProcZ,0,MaxThreads-1, nil, MaxThreads);
+	{$ELSE}
+	SubProcZ(0);
+	{$ENDIF}
+	for i := 0 to lZo - 1 do
+    	FreeMem(contrib^[i].p);
+    FreeMem(contrib);
+    //writeln(format('z d %d %d %d -> %d',[lXi,lYi,lZi, lZo]));
+end; //ResizeZ()
+
+procedure Resize32(var lHdr: TNIFTIhdr; var lImg8: TUInt8s; xScale, yScale, zScale, fwidth: single; filter: TFilterProc; MaxThreads: PtrInt = 0);
+var
+	mn, mx: single;
+begin
+	FindRange(lHdr,  TFloat32s(lImg8), mn, mx);
+	if (zScale > 1.0) or (zScale > xScale) then begin
+		//z is slowest dimension, do first when up-sampling
+		//writeln('rescale zyx');
+		ResizeZ(lHdr, lImg8, zScale, fwidth, filter, MaxThreads);
+		ResizeY(lHdr, lImg8, yScale, fwidth, filter, MaxThreads);
+		ResizeX(lHdr, lImg8, xScale, fwidth, filter, MaxThreads);
+	end else begin
+		//z is slowest dimension, do last when down-sampling
+		//writeln('rescale xyz');
+		ResizeX(lHdr, lImg8, xScale, fwidth, filter, MaxThreads);
+		ResizeY(lHdr, lImg8, yScale, fwidth, filter, MaxThreads);
+		ResizeZ(lHdr, lImg8, zScale, fwidth, filter, MaxThreads);
+	end;
+	CropRange(lHdr,  TFloat32s(lImg8), mn, mx);
+end;
+
+{$ENDIF}
 
 function SetFilter(filterIndex: integer; out filter: TFilterProc): single;
 begin

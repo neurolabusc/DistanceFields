@@ -176,6 +176,39 @@ begin
 		result := saveNii(outName+'_intensity', ihdr, intensityImg, isGz, is3D, maxthreads);	
 end;
 
+(*
+//evaluate up/down sampling
+function distanceFieldAll(fnm, outName: string; isGz, is3D: boolean; isImg, isTxt, outDataType: integer; threshold: single = 0.5; maxthreads: integer = 0; superSample: integer = 1; clusterType: integer = 26; smallestClusterVox: integer = 1; fwhm: single = 0; maskName: string = ''): boolean;
+var
+	hdr: TNIFTIhdr;
+	img: TUInt8s;
+	isInputNIfTI: boolean;
+	superSampleXYZ: TVec3;
+	startTime: TDateTime;
+begin
+	result := false;
+	if not loadVolumes(fnm, hdr, img, isInputNIfTI) then exit;
+	if outName = '' then begin
+		if isImg = kSave_Intensity then
+			outName := extractfilepath(fnm)+'thresh_'+extractfilename(changefileext(fnm,''))
+		else
+			outName := extractfilepath(fnm)+'depth_'+extractfilename(changefileext(fnm,''))
+	end else
+		outName := changefileext(outName,'');
+	changeDataType(hdr, img, kDT_FLOAT32);
+	superSampleXYZ := Vec3(2,2, 2);
+	startTime:= Now();
+	result := ShrinkOrEnlarge(hdr, img, superSampleXYZ, maxthreads);
+	writeln(format('Upsample required %.3f seconds.', [MilliSecondsBetween(Now,startTime)/1000.0]));
+	superSampleXYZ := Vec3(0.5,0.5, 0.5);
+	startTime:= Now();
+	result := ShrinkOrEnlarge(hdr, img, superSampleXYZ, maxthreads);
+	writeln(format('Downsample required %.3f seconds.', [MilliSecondsBetween(Now,startTime)/1000.0]));
+	
+	writeln(format('Saving %dx%dx%d voxels: %s',[hdr.dim[1], hdr.dim[2], hdr.dim[3], outName ]));	
+	result := saveNii(outName+'x', hdr, img, isGz, is3D, maxthreads);
+end;*)
+
 procedure showhelp;
 var
     exeName, outDir, inDir, os: string;

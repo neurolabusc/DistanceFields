@@ -20,7 +20,8 @@ function saveNii(fnm: string; var lHdr: TNIFTIhdr; var rawData: TUInt8s; isGz, i
 function saveNii(fnm: string; var oHdr: TNIFTIhdr; var orawVolBytes: TUInt8s; isGz: boolean; maxthreads: integer = 0): boolean; overload;
 function loadVolumes(var Filename: string; out lHdr: TNIFTIhdr; out rawData: TUInt8s; out isInputNIfTI: boolean): boolean;
 procedure printf(s: string);
-procedure changeDataType(var lHdr: TNIFTIhdr; var rawData: TUInt8s; outDT: integer; isVerbose: boolean = false);
+procedure changeDataType(var lHdr: TNIFTIhdr; var rawData: TUInt8s; outDT: integer; isVerbose: boolean = false); overload;
+procedure changeDataType(var lInHdr, lHdr: TNIFTIhdr; var rawData: TUInt8s; outDT: integer; isVerbose: boolean = false); overload;
 function applyMask(fnm: string; var srchdr: TNIFTIhdr; var srcimg: TFloat32s; maskVal: single = 0): boolean; overload;
 function applyMask(fnm: string; var srchdr: TNIFTIhdr; var srcimg: TInt32s): boolean; overload;
 
@@ -149,7 +150,20 @@ begin
 	result := true;
 end; //apply mask
 
-procedure changeDataType(var lHdr: TNIFTIhdr; var rawData: TUInt8s; outDT: integer; isVerbose: boolean = false);
+procedure changeDataType(var lHdr: TNIFTIhdr; var rawData: TUInt8s; outDT: integer; isVerbose: boolean = false); overload;
+var
+	lHdr2: TNIFTIhdr; 
+begin
+	 lHdr2 := lHdr;
+	 changeDataType(lHdr2, lHdr, rawData, outDT, isVerbose)
+end;
+
+procedure changeDataType(var lInHdr, lHdr: TNIFTIhdr; var rawData: TUInt8s; outDT: integer; isVerbose: boolean = false); overload;
+//lHdr describes current dataset
+//lInHdr was dataset read from disk
+//If lHdr.datatype=FLOAT and outDT=integer=lInHdr.datatype, the scaling factors from lInHdr used for output
+label
+	123;
 var
    i8s: TInt8s;
    i16s: TInt16s;
@@ -162,7 +176,8 @@ var
    inDT: word;
    omx, omn, mn, mx, intercept, slope, islope: double;
 begin
-	if (outDT = kDT_input) then exit;
+	if (outDT = kDT_input) and (lHdr.datatype = lInHdr.datatype) then exit;
+	if (outDT = kDT_input) then outDT := lInHdr.datatype;
 	if ((outDT <> kDT_FLOAT32) and (outDT <> kDT_INT8) and (outDT <> kDT_INT16) and (outDT <> kDT_UINT8) and (outDT <> kDT_UINT16) and (outDT <> kDT_INT32) ) then begin
 		printf('Unsupported output datatype');
 		exit;
@@ -226,6 +241,13 @@ begin
 		lHdr.bitpix := 32;
 	setlength(rawData, n * (lHdr.bitpix div 8));
 	if lHdr.scl_slope = 0 then lHdr.scl_slope := 1;
+	if (outDT = lInHdr.datatype) and (outDT <> kDT_FLOAT32) then begin
+		lHdr.scl_slope := lInHdr.scl_slope;
+		lHdr.scl_inter := lInHdr.scl_inter;
+		intercept := lHdr.scl_inter;
+		slope := lHdr.scl_slope;
+		goto 123;
+	end; 
 	if (outDT = kDT_FLOAT32) then begin //output float - no need to scale range
 		if (isVerbose) then printf('Converted to FLOAT32');
 		f32s := TFloat32s(rawData);
@@ -277,6 +299,7 @@ begin
 		lHdr.scl_slope := slope;
 		lHdr.scl_inter := intercept;	
 	end;
+ 123:
 	islope := 1/slope;
 	if (outDT = kDT_INT8) then begin
 		i8s := TInt8s(rawData);
@@ -547,6 +570,7 @@ begin
 end;
 {$ENDIF}
 
+{$IFDEF LOADFOREIGN}
 procedure FixQForm(var hdr: TNIFTIhdr);
 var
 	qto_xyz: mat44;
@@ -559,6 +583,7 @@ begin
 	nifti_mat44_to_quatern( qto_xyz , hdr.quatern_b, hdr.quatern_c, hdr.quatern_d,hdr.qoffset_x,hdr.qoffset_y,hdr.qoffset_z, dumdx, dumdy, dumdz,hdr.pixdim[0]) ;
 	hdr.qform_code  := hdr.sform_code;
 end;
+{$ENDIF}
 
 function saveNii(fnm: string; var oHdr: TNIFTIhdr; var orawVolBytes: TUInt8s; isGz: boolean; maxthreads: integer = 0): boolean; overload;
 var
@@ -573,7 +598,9 @@ begin
  fnm :=  fnm + '.nii';
  if isGz then
  	fnm := fnm + '.gz';
+ {$IFDEF LOADFOREIGN}
  FixQForm(oHdr);
+ {$ENDIF LOADFOREIGN}
 if fileexists(fnm) then
  	printf('Overwriting "'+fnm+'"')
  else
